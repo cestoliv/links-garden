@@ -20,10 +20,11 @@ CREATE TABLE IF NOT EXISTS documents (
     keywords            TEXT,
     message_text        TEXT,
     content_hash        TEXT,
+    extra_json          TEXT,
+    frontmatter_json    TEXT,
     status              TEXT    NOT NULL DEFAULT 'pending'
                                 CHECK (status IN ('pending','ok','failed')),
     error               TEXT,
-    retry_count         INTEGER NOT NULL DEFAULT 0,
     fetched_at          TEXT,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT    NOT NULL DEFAULT (datetime('now')),

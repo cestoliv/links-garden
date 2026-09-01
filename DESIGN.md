@@ -78,9 +78,9 @@ A content-addressed cache at `FETCH_CACHE_DIR` stores every raw response, keyed 
 URL. `fetch` consults it before spending a credit. The cache lives outside the database, so
 wiping and rebuilding the database during development costs nothing.
 
-`MAX_FETCHES_PER_RUN` caps how many credits one run can spend, default 50. A run that reaches
-the cap stops fetching, leaves the remaining items `pending`, and says so. The next run
-continues.
+`MAX_FETCHES_PER_RUN` caps how many fetches one run makes, direct and Firecrawl alike, default
+50. A run that reaches the cap stops fetching, leaves the remaining items `pending`, and says so.
+The next run continues.
 
 `GET https://api.firecrawl.dev/v2/team/credit-usage` reports remaining credits and costs nothing.
 Check it before a run and refuse to start when remaining credits fall below the run's needs.
@@ -99,6 +99,10 @@ A tombstoned document keeps its content in `documents_fts`. `tombstone` is an `U
 FTS update trigger reinserts the same terms under the same rowid. Every search query must
 filter `deleted_at IS NULL` or deleted items return as hits. `idx_documents_deleted` exists for
 this filter.
+
+The chunk selector must query `content IS NOT NULL AND status = 'ok' AND deleted_at IS NULL`.
+`content` is NULL for YouTube children and for every pending placeholder, and chunking either
+one produces nothing to embed.
 
 ## Sets
 
@@ -133,8 +137,9 @@ item's neighbors two hops out.
 ## Operations
 
 Cron. Per-item transactions. The ✅ reaction on the Signal message is written only after the
-item commits. Retries cap at three, then the item lands in the review queue. Each run checks
-ollama answers before starting, so a dead ollama skips one run instead of failing every item.
+item commits. A failed fetch is cached, so re-encountering it costs nothing, and
+`garden cache clear --failed` is how a retry is requested deliberately. Each run checks ollama
+answers before starting, so a dead ollama skips one run instead of failing every item.
 
 `.env` holds infrastructure and secrets: `BEEPER_ACCESS_TOKEN`, `BEEPER_API_URL`,
 `BEEPER_CHAT_ID`, `OLLAMA_URL`, `EMBEDDING_MODEL`, `EXTRACTION_MODEL`, `VAULT_PATH`,

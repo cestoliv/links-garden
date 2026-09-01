@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A searchable garden for saved links and notes"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.28.1",
     "pydantic-settings>=2.15.0",
 ]
 
@@ -14,6 +15,9 @@ dev = [
     "pytest>=8.4",
     "complexipy>=7.0",
 ]
+
+[project.scripts]
+garden = "links_garden.cli:main"
 
 [build-system]
 requires = ["hatchling"]
