@@ -10,9 +10,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from links_garden.beeper import BeeperClient
 from links_garden.config import Settings, load_settings
 from links_garden.db import connect, initialize
 from links_garden.fetch import Fetcher
+from links_garden.signal_sync import SignalReport, sync_signal
 from links_garden.sync import SyncReport, ingest_url, sync_vault
 
 logger = logging.getLogger(__name__)
@@ -24,9 +26,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     conn = connect(settings.database_path)
     initialize(conn)
     fetcher = Fetcher(settings)
+    beeper = BeeperClient(settings)
 
     if args.command == "sync-vault":
         return _cmd_sync_vault(conn, settings, fetcher, follow_urls=not args.no_follow_urls)
+    if args.command == "sync-signal":
+        return _cmd_sync_signal(
+            conn, settings, fetcher, beeper, follow_urls=not args.no_follow_urls
+        )
     if args.command == "credits":
         return _cmd_credits(fetcher)
     if args.command == "ingest":
@@ -44,6 +51,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="index note text only; skip fetching URLs found in notes",
     )
+    sync_signal_parser = subparsers.add_parser(
+        "sync-signal", help="sync the Signal chat to self into the store"
+    )
+    sync_signal_parser.add_argument(
+        "--no-follow-urls",
+        action="store_true",
+        help="count messages only; skip fetching the URLs they carry",
+    )
+
     subparsers.add_parser("credits", help="print remaining Firecrawl credits")
 
     ingest_parser = subparsers.add_parser("ingest", help="fetch and store one URL")
@@ -76,7 +92,7 @@ def _print_fetch_cost(settings: Settings, fetcher: Fetcher) -> None:
     print(f"remaining credits: {remaining_display}")
 
 
-def _print_report(report: SyncReport) -> None:
+def _print_report(report: SyncReport | SignalReport) -> None:
     fields = dataclasses.fields(report)
     width = max(len(field.name) for field in fields)
     for field in fields:
@@ -91,6 +107,27 @@ def _cmd_sync_vault(
         return 1
     _print_fetch_cost(settings, fetcher)
     report = sync_vault(conn, settings, fetcher, follow_urls=follow_urls)
+    _print_report(report)
+    return 0
+
+
+def _cmd_sync_signal(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    fetcher: Fetcher,
+    beeper: BeeperClient,
+    *,
+    follow_urls: bool,
+) -> int:
+    if not settings.beeper_access_token.get_secret_value() or not settings.beeper_chat_id:
+        print("BEEPER_ACCESS_TOKEN and BEEPER_CHAT_ID must both be set", file=sys.stderr)
+        return 1
+    if not beeper.check():
+        print("Beeper Desktop is not reachable; is it running?", file=sys.stderr)
+        return 1
+    _print_fetch_cost(settings, fetcher)
+    print(f"backfill start date: {settings.backfill_start_date or 'none (full history)'}")
+    report = sync_signal(conn, settings, fetcher, beeper, follow_urls=follow_urls)
     _print_report(report)
     return 0
 

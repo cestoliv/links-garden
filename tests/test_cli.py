@@ -1,8 +1,9 @@
 """CLI-level tests.
 
-`sync_vault` and `ingest_url` themselves are covered in test_sync.py; this file only covers
-logic that lives in cli.py: flag wiring, the credits-banner guard, the ingest exit code, and
-the cache-clear confirmation gate.
+`sync_vault`, `sync_signal` and `ingest_url` themselves are covered in test_sync.py and
+test_signal_sync.py; this file only covers logic that lives in cli.py: flag wiring, the
+credits-banner guard, the sync-signal fail-fast checks, the ingest exit code, and the
+cache-clear confirmation gate.
 """
 
 import sqlite3
@@ -15,6 +16,7 @@ from _pytest.monkeypatch import MonkeyPatch
 
 from links_garden import cli
 from links_garden.adapters import Extracted
+from links_garden.beeper import BeeperClient
 from links_garden.config import Settings
 from links_garden.fetch import Fetcher
 
@@ -29,12 +31,84 @@ def test_sync_vault_defaults_to_following_urls() -> None:
     assert args.no_follow_urls is False
 
 
-def _settings(tmp_path: Path, cache_dir: Path | None = None) -> Settings:
+def _settings(
+    tmp_path: Path,
+    cache_dir: Path | None = None,
+    *,
+    beeper_access_token: str = "",
+    beeper_chat_id: str = "",
+) -> Settings:
     return Settings(
         _env_file=None,
         fetch_cache_dir=cache_dir or tmp_path / "cache",
         max_fetches_per_run=5,
+        beeper_access_token=beeper_access_token,  # type: ignore[arg-type]
+        beeper_chat_id=beeper_chat_id,
     )
+
+
+class _CheckOnlyBeeper:
+    """Stand-in for `BeeperClient` covering only `check()`. Any other call is a test bug."""
+
+    def __init__(self, *, check_result: bool) -> None:
+        self._check_result = check_result
+
+    def check(self) -> bool:
+        return self._check_result
+
+
+def test_cmd_sync_signal_fails_fast_when_access_token_is_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path, beeper_access_token="", beeper_chat_id="chat-1")
+    beeper = cast(BeeperClient, _CheckOnlyBeeper(check_result=True))
+
+    exit_code = cli._cmd_sync_signal(
+        cast(sqlite3.Connection, None),
+        settings,
+        cast(Fetcher, _CreditlessFetcher()),
+        beeper,
+        follow_urls=True,
+    )
+
+    assert exit_code == 1
+    assert "BEEPER_ACCESS_TOKEN" in capsys.readouterr().err
+
+
+def test_cmd_sync_signal_fails_fast_when_chat_id_is_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path, beeper_access_token="test-token", beeper_chat_id="")
+    beeper = cast(BeeperClient, _CheckOnlyBeeper(check_result=True))
+
+    exit_code = cli._cmd_sync_signal(
+        cast(sqlite3.Connection, None),
+        settings,
+        cast(Fetcher, _CreditlessFetcher()),
+        beeper,
+        follow_urls=True,
+    )
+
+    assert exit_code == 1
+    assert "BEEPER_CHAT_ID" in capsys.readouterr().err
+
+
+def test_cmd_sync_signal_fails_fast_when_beeper_is_unreachable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path, beeper_access_token="test-token", beeper_chat_id="chat-1")
+    beeper = cast(BeeperClient, _CheckOnlyBeeper(check_result=False))
+
+    exit_code = cli._cmd_sync_signal(
+        cast(sqlite3.Connection, None),
+        settings,
+        cast(Fetcher, _CreditlessFetcher()),
+        beeper,
+        follow_urls=True,
+    )
+
+    assert exit_code == 1
+    assert "not reachable" in capsys.readouterr().err
 
 
 class _RaisingFetcher:

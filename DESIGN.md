@@ -104,6 +104,11 @@ The chunk selector must query `content IS NOT NULL AND status = 'ok' AND deleted
 `content` is NULL for YouTube children and for every pending placeholder, and chunking either
 one produces nothing to embed.
 
+A Signal document's `message_text` holds the user's own commentary on why they saved the link,
+present on roughly 75 of the 500 links. When it is present, the chunker folds it into the chunk
+text as `message_text`, then a blank line, then `content`, so the user's own words stay
+searchable instead of sitting in a column nothing reads.
+
 ## Sets
 
 A set has a name, a natural-language description that drives classification, and a JSON Schema

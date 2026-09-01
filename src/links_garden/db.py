@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     at           TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- One row per Signal message that has been reacted to. A message has many URL rows, so the
+-- reaction (one per message) can't honestly live as a column on any single one of them.
+CREATE TABLE IF NOT EXISTS signal_reactions (
+    message_id  TEXT PRIMARY KEY,
+    reacted_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_status  ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_source  ON documents(source, source_ref);
 CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(deleted_at);
