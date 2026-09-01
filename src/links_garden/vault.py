@@ -152,7 +152,7 @@ def _collect_urls(frontmatter: dict[str, object], body: str) -> tuple[str, ...]:
     for value in frontmatter.values():
         for url in _urls_in(value):
             seen.setdefault(url, None)
-    for url in _find_urls(body):
+    for url in find_urls(body):
         seen.setdefault(url, None)
     return tuple(seen)
 
@@ -160,14 +160,17 @@ def _collect_urls(frontmatter: dict[str, object], body: str) -> tuple[str, ...]:
 def _urls_in(value: object) -> Iterator[str]:
     """URLs inside one frontmatter value: a scalar string, or a one-level list of them."""
     if isinstance(value, str):
-        yield from _find_urls(value)
+        yield from find_urls(value)
     elif isinstance(value, list):
         for item in value:
             if isinstance(item, str):
-                yield from _find_urls(item)
+                yield from find_urls(item)
 
 
-def _find_urls(text: str) -> Iterator[str]:
+def find_urls(text: str) -> Iterator[str]:
+    """URLs found in free text, trailing punctuation stripped. Shared with `signal_sync`, so a
+    URL embedded in prose is recognized the same way regardless of source.
+    """
     for match in _URL_PATTERN.finditer(text):
         url = match.group(0).rstrip(_URL_TRAILING_PUNCTUATION)
         if url:

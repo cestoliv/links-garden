@@ -66,18 +66,18 @@ def sync_vault(
 def ingest_url(conn: sqlite3.Connection, url: str, fetcher: Fetcher) -> Extracted:
     """Fetch, extract and store one ad hoc URL as a `source='manual'` document.
 
-    Shares `_resolve_status` with `_sync_url`: a fetch the run never actually attempted,
+    Shares `resolve_status` with `_sync_url`: a fetch the run never actually attempted,
     because the cap was hit mid-extraction, is left `pending` rather than recorded as `failed`.
     """
     extracted = extract(url, fetcher)
-    status = _resolve_status(extracted, fetcher)
+    status = resolve_status(extracted, fetcher)
     if status == "skipped":
         row = conn.execute(
             "SELECT id FROM documents WHERE source = 'manual' AND source_ref = ?", (url,)
         ).fetchone()
         _mark_pending_if_new(conn, row, "manual", url, url, None)
         return extracted
-    _upsert_extracted(
+    upsert_extracted(
         conn,
         source="manual",
         source_ref=url,
@@ -89,7 +89,7 @@ def ingest_url(conn: sqlite3.Connection, url: str, fetcher: Fetcher) -> Extracte
     return extracted
 
 
-def _resolve_status(extracted: Extracted, fetcher: Fetcher) -> Literal["ok", "failed", "skipped"]:
+def resolve_status(extracted: Extracted, fetcher: Fetcher) -> Literal["ok", "failed", "skipped"]:
     """The terminal status of one extraction: `ok`, a genuine `failed`, or `skipped` when the
     run cap was hit mid-extraction and nothing was actually learned about the URL.
 
@@ -225,10 +225,10 @@ def _sync_url(
         return
 
     extracted = extract(url, fetcher)
-    status = _resolve_status(extracted, fetcher)
+    status = resolve_status(extracted, fetcher)
     if status == "ok":
         report.urls_fetched += 1
-        _upsert_extracted(
+        upsert_extracted(
             conn,
             source="obsidian",
             source_ref=source_ref,
@@ -245,7 +245,7 @@ def _sync_url(
         return
 
     report.urls_failed += 1
-    _upsert_extracted(
+    upsert_extracted(
         conn,
         source="obsidian",
         source_ref=source_ref,
@@ -275,7 +275,7 @@ def _mark_pending_if_new(
     conn.commit()
 
 
-def _upsert_extracted(
+def upsert_extracted(
     conn: sqlite3.Connection,
     *,
     source: Source,
@@ -285,6 +285,9 @@ def _upsert_extracted(
     extracted: Extracted,
     status: Literal["ok", "failed"],
 ) -> None:
+    """Insert or update one URL document. Generic over `source` and `parent_document_id`, so
+    `signal_sync` shares it rather than reimplementing the same upsert.
+    """
     extra_json = json.dumps(extracted.extra) if extracted.extra else None
     row = conn.execute(
         "SELECT id FROM documents WHERE source = ? AND source_ref = ?", (source, source_ref)
