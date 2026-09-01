@@ -13,7 +13,9 @@ from typing import Any
 from links_garden.beeper import BeeperClient
 from links_garden.config import Settings, load_settings
 from links_garden.db import connect, initialize
+from links_garden.embed import Embedder, IndexReport, index_documents
 from links_garden.fetch import Fetcher
+from links_garden.search import Hit, search
 from links_garden.signal_sync import SignalReport, sync_signal
 from links_garden.sync import SyncReport, ingest_url, sync_vault
 
@@ -27,6 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     initialize(conn)
     fetcher = Fetcher(settings)
     beeper = BeeperClient(settings)
+    embedder = Embedder(settings)
 
     if args.command == "sync-vault":
         return _cmd_sync_vault(conn, settings, fetcher, follow_urls=not args.no_follow_urls)
@@ -38,6 +41,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_credits(fetcher)
     if args.command == "ingest":
         return _cmd_ingest(conn, settings, fetcher, args.url)
+    if args.command == "index":
+        return _cmd_index(conn, settings, embedder)
+    if args.command == "search":
+        return _cmd_search(conn, settings, embedder, args.query, limit=args.limit)
     return _cmd_cache_clear(settings, failed=args.failed, all_=args.all, yes=args.yes)
 
 
@@ -62,8 +69,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("credits", help="print remaining Firecrawl credits")
 
+    subparsers.add_parser("index", help="chunk and embed documents that changed since last run")
+
     ingest_parser = subparsers.add_parser("ingest", help="fetch and store one URL")
     ingest_parser.add_argument("url")
+
+    search_parser = subparsers.add_parser("search", help="search the garden")
+    search_parser.add_argument("query")
+    search_parser.add_argument("--limit", type=int, default=20)
 
     cache_parser = subparsers.add_parser("cache", help="manage the fetch cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
@@ -92,7 +105,7 @@ def _print_fetch_cost(settings: Settings, fetcher: Fetcher) -> None:
     print(f"remaining credits: {remaining_display}")
 
 
-def _print_report(report: SyncReport | SignalReport) -> None:
+def _print_report(report: SyncReport | SignalReport | IndexReport) -> None:
     fields = dataclasses.fields(report)
     width = max(len(field.name) for field in fields)
     for field in fields:
@@ -146,6 +159,42 @@ def _cmd_ingest(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher, 
         return 0
     print(f"{url}: failed: {extracted.error}", file=sys.stderr)
     return 1
+
+
+def _cmd_index(conn: sqlite3.Connection, settings: Settings, embedder: Embedder) -> int:
+    print(f"model: {settings.embedding_model}")
+    print(f"ollama: {settings.ollama_url}")
+    if not embedder.check():
+        print(
+            f"{settings.embedding_model} is not available at {settings.ollama_url} "
+            "(not pulled, or ollama is unreachable)",
+            file=sys.stderr,
+        )
+        return 1
+    report = index_documents(conn, settings, embedder)
+    _print_report(report)
+    # Unlike a sync's urls_failed, a dead link is expected and the row records it for the
+    # review queue. documents_failed here means the embedding backend broke mid-run: the
+    # corpus now answers searches wrongly with nothing to show for it, so cron must see red.
+    return 1 if report.documents_failed else 0
+
+
+def _cmd_search(
+    conn: sqlite3.Connection, settings: Settings, embedder: Embedder, query: str, *, limit: int
+) -> int:
+    hits = search(conn, settings, embedder, query, limit=limit)
+    if not hits:
+        print("no results")
+        return 0
+    for rank, hit in enumerate(hits, start=1):
+        _print_hit(rank, hit)
+    return 0
+
+
+def _print_hit(rank: int, hit: Hit) -> None:
+    print(f"{rank}. {hit.title or '(untitled)'}")
+    print(f"   {hit.url or '(no url)'}")
+    print(f"   {hit.snippet}")
 
 
 def _cmd_cache_clear(settings: Settings, *, failed: bool, all_: bool, yes: bool) -> int:
