@@ -8,6 +8,7 @@
 *.db-wal
 *.db-shm
 data/
+.cache/
 
 # Python
 __pycache__/
@@ -25,3 +26,6 @@ frontend/dist/
 
 # OS
 .DS_Store
+
+# SDD scratch
+.superpowers/

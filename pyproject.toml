@@ -3,7 +3,9 @@ name = "links-garden"
 version = "0.1.0"
 description = "A searchable garden for saved links and notes"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.15.0",
+]
 
 [dependency-groups]
 dev = [
@@ -34,6 +36,10 @@ max-complexity = 10
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_typed = true
 
 [tool.complexipy]
 max-complexity = 15
