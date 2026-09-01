@@ -18,6 +18,7 @@ from links_garden import cli
 from links_garden.adapters import Extracted
 from links_garden.beeper import BeeperClient
 from links_garden.config import Settings
+from links_garden.embed import Embedder, IndexReport
 from links_garden.fetch import Fetcher
 
 
@@ -177,6 +178,44 @@ def test_cmd_ingest_returns_nonzero_on_failure(
 
     assert exit_code == 1
     assert "boom" in capsys.readouterr().err
+
+
+class _CheckOnlyEmbedder:
+    """Stand-in for `Embedder` covering only `check()`. Any other call is a test bug."""
+
+    def check(self) -> bool:
+        return True
+
+
+def test_cmd_index_returns_zero_when_nothing_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli, "index_documents", lambda conn, settings, embedder: IndexReport(documents_indexed=2)
+    )
+
+    exit_code = cli._cmd_index(
+        cast(sqlite3.Connection, None), _settings(tmp_path), cast(Embedder, _CheckOnlyEmbedder())
+    )
+
+    assert exit_code == 0
+
+
+def test_cmd_index_returns_nonzero_when_documents_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A dead embedding backend mid-run must fail the cron job loudly, unlike a sync's
+    # urls_failed: a dead link is expected, but a broken embedder means search now answers
+    # wrong with nothing to show for it.
+    monkeypatch.setattr(
+        cli, "index_documents", lambda conn, settings, embedder: IndexReport(documents_failed=3)
+    )
+
+    exit_code = cli._cmd_index(
+        cast(sqlite3.Connection, None), _settings(tmp_path), cast(Embedder, _CheckOnlyEmbedder())
+    )
+
+    assert exit_code == 1
 
 
 def _write_cache_entry(cache_dir: Path, name: str, status: str) -> None:

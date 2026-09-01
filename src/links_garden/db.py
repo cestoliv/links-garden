@@ -6,6 +6,26 @@ from typing import Literal
 
 Source = Literal["signal", "obsidian", "manual", "mcp"]
 
+# Bump this and append a matching entry to _MIGRATIONS for any future schema change. Both
+# CREATE TABLE IF NOT EXISTS (new tables) and this constant (new columns on existing tables)
+# have to move together, or an upgraded database silently keeps missing columns forever.
+_SCHEMA_VERSION = 2
+
+# Each entry upgrades a database stamped at (key - 1) up to key, as (column, statement) pairs.
+# Never edit a past entry: a database already migrated past it will never see the change.
+#
+# The column name is checked against PRAGMA table_info before its statement runs. Every build
+# between step 1 and this one stamped a fresh database straight to version 1, whatever _SCHEMA
+# happened to create that day, so a real version-1 database may already have any subset of
+# these columns: the version number alone cannot say which ALTERs still need to run.
+_MIGRATIONS: dict[int, tuple[tuple[str, str], ...]] = {
+    2: (
+        ("extra_json", "ALTER TABLE documents ADD COLUMN extra_json TEXT"),
+        ("frontmatter_json", "ALTER TABLE documents ADD COLUMN frontmatter_json TEXT"),
+        ("chunks_hash", "ALTER TABLE documents ADD COLUMN chunks_hash TEXT"),
+    ),
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
     id                  INTEGER PRIMARY KEY,
@@ -20,6 +40,7 @@ CREATE TABLE IF NOT EXISTS documents (
     keywords            TEXT,
     message_text        TEXT,
     content_hash        TEXT,
+    chunks_hash         TEXT,
     extra_json          TEXT,
     frontmatter_json    TEXT,
     status              TEXT    NOT NULL DEFAULT 'pending'
@@ -127,13 +148,48 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def initialize(conn: sqlite3.Connection) -> None:
-    """Create the schema if it does not exist yet. Idempotent, safe to call on every startup."""
+    """Create the schema if it does not exist yet, and migrate an older database up to date."""
+    # A database whose documents table doesn't exist yet is brand new: executescript below
+    # builds every column the current schema defines, so there is nothing to migrate. This
+    # can't be read off user_version: a build stamped straight to 1 on creation, at any point
+    # in _SCHEMA's history, looks identical to a real fresh database from the stamp alone.
+    fresh = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+        ).fetchone()
+        is None
+    )
     conn.executescript(_SCHEMA)
-    # user_version can't be parameterized; only stamp it on a fresh database so a later
-    # migration's bump survives every subsequent startup call to initialize().
-    if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
-        conn.execute("PRAGMA user_version=1")
+    if fresh:
+        conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+    else:
+        _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add whatever `documents` columns the current schema needs that this database lacks.
+
+    The version stamp is only trusted to skip a database that is already current. Which
+    columns an unstamped database is missing is read from the table itself, not guessed from
+    the version number: see the comment on `_MIGRATIONS`.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= _SCHEMA_VERSION:
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    # Looping rather than testing a single `if` matters the moment a database is more than one
+    # version behind: skipping straight to the newest migration would leave the versions
+    # between unapplied.
+    for target in range(version + 1, _SCHEMA_VERSION + 1):
+        # .get, not []: a database can now enter here at version 0, and version 1 (the
+        # original baseline) added no column of its own, so it has no entry to look up.
+        for column, statement in _MIGRATIONS.get(target, ()):
+            if column not in columns:
+                conn.execute(statement)
+                columns.add(column)
+    # user_version can't be parameterized.
+    conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
 def tombstone(conn: sqlite3.Connection, document_id: int) -> None:

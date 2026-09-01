@@ -27,7 +27,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
 
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_initialize_is_idempotent_across_a_reopened_connection(tmp_path: Path) -> None:
@@ -39,14 +39,152 @@ def test_initialize_is_idempotent_across_a_reopened_connection(tmp_path: Path) -
     conn = connect(db_path)
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_initialize_does_not_clobber_a_later_migration_version(tmp_path: Path) -> None:
     conn = _open(tmp_path)
-    conn.execute("PRAGMA user_version=2")
+    conn.execute("PRAGMA user_version=3")
     conn.commit()
 
+    initialize(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_fresh_database_ends_at_current_version_with_every_column_present(
+    tmp_path: Path,
+) -> None:
+    conn = _open(tmp_path)
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert {"extra_json", "frontmatter_json", "chunks_hash"}.issubset(columns)
+
+
+def _create_version_1_documents_table(
+    db_path: Path, already_present: tuple[str, ...] = (), *, version: int = 1
+) -> None:
+    # Every current column except extra_json, frontmatter_json and chunks_hash by default: the
+    # other columns have to stay, since the FTS triggers and the url index in _SCHEMA reference
+    # them on every startup. `already_present` backfills some of the three, because a real
+    # version-1 database was stamped 1 at whatever point in _SCHEMA's history it was created,
+    # so it may already have any subset of them.
+    columns = [
+        "id                  INTEGER PRIMARY KEY",
+        "source              TEXT    NOT NULL",
+        "source_ref          TEXT    NOT NULL",
+        "url                 TEXT",
+        "parent_document_id  INTEGER",
+        "title               TEXT",
+        "author              TEXT",
+        "content             TEXT",
+        "summary             TEXT",
+        "keywords            TEXT",
+        "message_text        TEXT",
+        "content_hash        TEXT",
+        "status              TEXT    NOT NULL DEFAULT 'pending'",
+        "error               TEXT",
+        "fetched_at          TEXT",
+        "created_at          TEXT    NOT NULL DEFAULT (datetime('now'))",
+        "updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))",
+        "deleted_at          TEXT",
+        *(f"{name} TEXT" for name in already_present),
+        "UNIQUE (source, source_ref)",
+    ]
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"CREATE TABLE documents ({', '.join(columns)})")
+    conn.execute(f"PRAGMA user_version={version}")
+    conn.commit()
+    conn.close()
+
+
+def test_initialize_migrates_a_version_1_database_to_the_current_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(db_path)
+
+    conn = connect(db_path)
+    initialize(conn)
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    assert {"extra_json", "frontmatter_json", "chunks_hash"}.issubset(columns)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_initialize_migrates_a_version_0_database_whose_table_already_exists(
+    tmp_path: Path,
+) -> None:
+    # A database that predates this step's first initialize() call: documents exists but
+    # user_version was never stamped. Deciding "fresh" from the stamp alone treats this as
+    # brand new, no-ops the CREATE TABLE, and stamps version 2 over a table still missing every
+    # column added since, permanently, since the stamp then claims the schema is current.
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(db_path, version=0)
+
+    conn = connect(db_path)
+    initialize(conn)
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    assert {"extra_json", "frontmatter_json", "chunks_hash"}.issubset(columns)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_initialize_twice_on_a_migrated_database_changes_nothing_and_does_not_raise(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(db_path)
+    conn = connect(db_path)
+    initialize(conn)
+
+    initialize(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_initialize_migrates_a_partially_upgraded_version_1_database(tmp_path: Path) -> None:
+    # The shape every step-2 and step-3 database is actually in: user_version=1, but
+    # extra_json and frontmatter_json already exist from a later _SCHEMA and only chunks_hash
+    # is missing. Trusting the version number here re-runs an ALTER SQLite already applied.
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(db_path, already_present=("extra_json", "frontmatter_json"))
+
+    conn = connect(db_path)
+    initialize(conn)
+    initialize(conn)  # must not re-attempt the extra_json/frontmatter_json ALTERs either
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    assert {"extra_json", "frontmatter_json", "chunks_hash"}.issubset(columns)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_initialize_on_a_version_1_database_with_every_column_already_present(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(
+        db_path, already_present=("extra_json", "frontmatter_json", "chunks_hash")
+    )
+
+    conn = connect(db_path)
+    initialize(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_reinitializing_a_migrated_database_does_not_reapply_the_alters(
+    tmp_path: Path,
+) -> None:
+    # If the version guard ever regressed to running migrations unconditionally, this would
+    # raise sqlite3.OperationalError: duplicate column name instead of passing quietly.
+    db_path = tmp_path / "garden.db"
+    _create_version_1_documents_table(db_path)
+    conn = connect(db_path)
+    initialize(conn)
+    conn.close()
+
+    conn = connect(db_path)
     initialize(conn)
 
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
