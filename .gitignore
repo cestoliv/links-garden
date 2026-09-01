@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+.env.local
+*.env
+
+# Data
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store

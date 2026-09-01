@@ -1,0 +1,43 @@
+[project]
+name = "links-garden"
+version = "0.1.0"
+description = "A searchable garden for saved links and notes"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "complexipy>=7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/links_garden"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = [".venv", ".agents", "frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C90", "RUF"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.complexipy]
+max-complexity = 15
+exclude = [".venv", ".agents", "frontend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
