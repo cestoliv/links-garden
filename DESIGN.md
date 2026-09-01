@@ -40,20 +40,50 @@ system deletes or edits a note.
 One `fetch(url) -> text` function with two backends chosen in `.env`. No adapter knows which
 backend ran.
 
-Firecrawl is the default backend and proxies every request, including the JSON APIs, using
-`formats: ["rawHtml"]` so bodies arrive unmodified. This protects the home IP from being
-flagged. If `FIRECRAWL_API_KEY` is missing, the app logs a warning at startup and uses the
-direct backend.
+Firecrawl is the default backend and proxies every request it can, including the JSON APIs, using
+`formats: ["rawHtml"]` so bodies arrive unmodified. This protects the home IP from being flagged.
+If `FIRECRAWL_API_KEY` is missing, the app logs a warning at startup and uses the direct backend.
+
+Measured on 2026-09-01: Firecrawl refuses `tiktok.com` and `vm.tiktok.com` outright, answering
+"we do not support this site" for any URL on those domains. It serves `api.fxtwitter.com`,
+`youtube.com/oembed`, `github.com` and ordinary articles without trouble. TikTok therefore cannot
+use the Firecrawl backend, and TikTok is 168 of 500 links. See the TikTok entry under Adapters.
 
 Adapters, in order of precedence:
 
-1. `share.google` and other shorteners: resolve redirects first, then re-dispatch.
-2. TikTok: oEmbed at `tiktok.com/oembed?url=`. Yields caption, `author_name`, `author_url`.
-3. X and Twitter: `api.fxtwitter.com`. Yields author handle and full text.
-4. YouTube: oEmbed. Yields title and channel.
-5. Everything else: generic article extraction.
+| Order | Source | Endpoint | Backend | Yields |
+| --- | --- | --- | --- | --- |
+| 1 | `share.google` and other shorteners | resolve redirects, then re-dispatch | Firecrawl | the real URL |
+| 2 | `vm.tiktok.com` | resolve redirect, then rule 3 | **direct** | the full TikTok URL |
+| 3 | TikTok | `tiktok.com/oembed?url=` | **direct** | caption, `author_name`, `author_url` |
+| 4 | X and Twitter | `api.fxtwitter.com` | Firecrawl | author handle, full text |
+| 5 | YouTube | `youtube.com/oembed` | Firecrawl | title, channel |
+| 6 | everything else | generic article extraction | Firecrawl | title, author, body |
+
+TikTok is the one exception to the Firecrawl rule, and it is forced. Firecrawl refuses the domain,
+so those two adapters call TikTok directly. To keep the home IP safe they carry their own limits:
+one request every 2 seconds, and every response cached forever. TikTok oEmbed is TikTok's own
+public embed API, designed for third-party callers, so this is a documented interface rather than
+scraping.
 
 Video and audio transcription is out of scope.
+
+### Fetch budget
+
+The Firecrawl plan allows 1000 fetches per month. That is a hard ceiling, and one development
+run of step 2 would spend a quarter of it, because step 2 fetches the 219 URLs found inside
+Obsidian notes. Two mechanisms keep the budget intact.
+
+A content-addressed cache at `FETCH_CACHE_DIR` stores every raw response, keyed by a hash of the
+URL. `fetch` consults it before spending a credit. The cache lives outside the database, so
+wiping and rebuilding the database during development costs nothing.
+
+`MAX_FETCHES_PER_RUN` caps how many credits one run can spend, default 50. A run that reaches
+the cap stops fetching, leaves the remaining items `pending`, and says so. The next run
+continues.
+
+`GET https://api.firecrawl.dev/v2/team/credit-usage` reports remaining credits and costs nothing.
+Check it before a run and refuse to start when remaining credits fall below the run's needs.
 
 ## Index and retrieval
 
@@ -64,6 +94,11 @@ Search fuses the FTS5 and vector rankings with reciprocal rank fusion, matches c
 returns parent documents with the best-matching chunk as the snippet.
 
 Edges are nearest neighbors computed on demand. No stored edges.
+
+A tombstoned document keeps its content in `documents_fts`. `tombstone` is an `UPDATE`, and the
+FTS update trigger reinserts the same terms under the same rowid. Every search query must
+filter `deleted_at IS NULL` or deleted items return as hits. `idx_documents_deleted` exists for
+this filter.
 
 ## Sets
 
@@ -101,10 +136,12 @@ Cron. Per-item transactions. The ✅ reaction on the Signal message is written o
 item commits. Retries cap at three, then the item lands in the review queue. Each run checks
 ollama answers before starting, so a dead ollama skips one run instead of failing every item.
 
-`.env` holds infrastructure and secrets: `BEEPER_ACCESS_TOKEN`, `OLLAMA_URL`, model names,
-`VAULT_PATH`, `BACKFILL_START_DATE`, `FIRECRAWL_API_KEY`, `FETCH_BACKEND`, `API_TOKEN`, cron
-cadence. Sets live in the database. Model names appear read-only in the admin so you can tell
-what produced a bad extraction.
+`.env` holds infrastructure and secrets: `BEEPER_ACCESS_TOKEN`, `BEEPER_API_URL`,
+`BEEPER_CHAT_ID`, `OLLAMA_URL`, `EMBEDDING_MODEL`, `EXTRACTION_MODEL`, `VAULT_PATH`,
+`VAULT_EXCLUDE`, `BACKFILL_START_DATE`, `FETCH_BACKEND`, `FIRECRAWL_API_KEY`,
+`FETCH_CACHE_DIR`, `MAX_FETCHES_PER_RUN`, `API_TOKEN`, `DATABASE_PATH`. Sets live in the
+database. Model names appear read-only in the admin so you can tell what produced a bad
+extraction.
 
 `BACKFILL_START_DATE=2026-08-25` during development, about 40 links, which exercises every
 adapter path. Set the real date at deploy.
