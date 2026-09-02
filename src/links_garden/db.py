@@ -9,7 +9,7 @@ Source = Literal["signal", "obsidian", "manual", "mcp"]
 # Bump this and append a matching entry to _MIGRATIONS for any future schema change. Both
 # CREATE TABLE IF NOT EXISTS (new tables) and this constant (new columns on existing tables)
 # have to move together, or an upgraded database silently keeps missing columns forever.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # Each entry upgrades a database stamped at (key - 1) up to key, as (column, statement) pairs.
 # Never edit a past entry: a database already migrated past it will never see the change.
@@ -24,6 +24,7 @@ _MIGRATIONS: dict[int, tuple[tuple[str, str], ...]] = {
         ("frontmatter_json", "ALTER TABLE documents ADD COLUMN frontmatter_json TEXT"),
         ("chunks_hash", "ALTER TABLE documents ADD COLUMN chunks_hash TEXT"),
     ),
+    3: (("enriched_hash", "ALTER TABLE documents ADD COLUMN enriched_hash TEXT"),),
 }
 
 _SCHEMA = """
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS documents (
     message_text        TEXT,
     content_hash        TEXT,
     chunks_hash         TEXT,
+    enriched_hash       TEXT,
     extra_json          TEXT,
     frontmatter_json    TEXT,
     status              TEXT    NOT NULL DEFAULT 'pending'

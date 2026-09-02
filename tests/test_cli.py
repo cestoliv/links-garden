@@ -18,7 +18,10 @@ from links_garden import cli
 from links_garden.adapters import Extracted
 from links_garden.beeper import BeeperClient
 from links_garden.config import Settings
+from links_garden.db import connect, initialize
 from links_garden.embed import Embedder, IndexReport
+from links_garden.enrich import Enricher, EnrichReport
+from links_garden.extract_sets import ExtractReport
 from links_garden.fetch import Fetcher
 
 
@@ -216,6 +219,101 @@ def test_cmd_index_returns_nonzero_when_documents_failed(
     )
 
     assert exit_code == 1
+
+
+class _CheckOnlyEnricher:
+    """Stand-in for `Enricher` covering only `check()`. Any other call is a test bug."""
+
+    def check(self) -> bool:
+        return True
+
+
+def test_cmd_enrich_returns_zero_when_nothing_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli, "enrich_documents", lambda conn, settings, enricher: EnrichReport(documents_enriched=2)
+    )
+
+    exit_code = cli._cmd_enrich(
+        cast(sqlite3.Connection, None), _settings(tmp_path), cast(Enricher, _CheckOnlyEnricher())
+    )
+
+    assert exit_code == 0
+
+
+def test_cmd_enrich_returns_nonzero_when_documents_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A dead extraction backend mid-run must fail the cron job loudly, matching _cmd_index.
+    monkeypatch.setattr(
+        cli, "enrich_documents", lambda conn, settings, enricher: EnrichReport(documents_failed=3)
+    )
+
+    exit_code = cli._cmd_enrich(
+        cast(sqlite3.Connection, None), _settings(tmp_path), cast(Enricher, _CheckOnlyEnricher())
+    )
+
+    assert exit_code == 1
+
+
+class _CheckOnlyExtractor:
+    """Stand-in for `Enricher` covering only `check()`. Any other call is a test bug."""
+
+    def check(self) -> bool:
+        return True
+
+
+def test_cmd_extract_returns_zero_when_nothing_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "extract_pending",
+        lambda conn, enricher, *, set_name=None: ExtractReport(memberships_ok=2),
+    )
+
+    exit_code = cli._cmd_extract(
+        cast(sqlite3.Connection, None),
+        _settings(tmp_path),
+        cast(Enricher, _CheckOnlyExtractor()),
+        None,
+    )
+
+    assert exit_code == 0
+
+
+def test_cmd_extract_returns_nonzero_when_memberships_failed(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "extract_pending",
+        lambda conn, enricher, *, set_name=None: ExtractReport(memberships_failed=3),
+    )
+
+    exit_code = cli._cmd_extract(
+        cast(sqlite3.Connection, None),
+        _settings(tmp_path),
+        cast(Enricher, _CheckOnlyExtractor()),
+        None,
+    )
+
+    assert exit_code == 1
+
+
+def test_cmd_extract_returns_nonzero_and_names_the_set_when_set_name_is_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = connect(tmp_path / "garden.db")
+    initialize(conn)
+
+    exit_code = cli._cmd_extract(
+        conn, _settings(tmp_path), cast(Enricher, _CheckOnlyExtractor()), "typo"
+    )
+
+    assert exit_code == 1
+    assert "typo" in capsys.readouterr().err
 
 
 def _write_cache_entry(cache_dir: Path, name: str, status: str) -> None:
