@@ -21,7 +21,32 @@ See [DESIGN.md](DESIGN.md) for the design and the reasoning behind it.
 Ollama, Beeper and Firecrawl are each optional. Without them you lose the feature that uses them,
 not the app.
 
-## Install
+## Install with Docker
+
+One image serves both the API and the built dashboard, so this is the whole install for a
+container host — no Node, no Python, no `npm run dev`. Ollama and Beeper Desktop still run on
+the host either way; see [Requirements](#requirements).
+
+```sh
+curl -O https://raw.githubusercontent.com/cestoliv/links-garden/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/cestoliv/links-garden/main/.env.example
+# edit .env: at minimum API_TOKEN, see Configure below. VAULT_PATH, if set, is the host's
+# absolute path to your vault; docker-compose.yml mounts it into the container read-only.
+
+docker compose up -d
+```
+
+Open `http://127.0.0.1:8000` and sign in with `API_TOKEN`. Run a CLI command, such as a sync,
+with `docker compose exec garden garden sync-vault`.
+
+To update to the latest published image:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+## Install from source
 
 ```sh
 git clone git@github.com:cestoliv/links-garden.git
@@ -92,6 +117,9 @@ uv run garden sets add recipe \
 - `uv run garden credits` shows what is left.
 
 ## The dashboard
+
+This is the from-source dev flow, with the dashboard on its own dev server. The Docker image
+serves the built dashboard from the API's own origin instead; see Install with Docker above.
 
 ```sh
 uv run garden serve            # API on 127.0.0.1:8000

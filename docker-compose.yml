@@ -1,0 +1,32 @@
+services:
+  garden:
+    image: ghcr.io/cestoliv/links-garden:latest
+    restart: unless-stopped
+    # API_TOKEN has no default; api.py refuses to start without it, so this file must set it.
+    env_file: .env
+    environment:
+      # Paths inside the container. Distinct from the host paths below and from whatever
+      # VAULT_PATH/DATABASE_PATH/FETCH_CACHE_DIR hold in .env for a from-source install.
+      VAULT_PATH: /vault
+      DATABASE_PATH: /data/garden.db
+      FETCH_CACHE_DIR: /data/cache
+      # ollama and Beeper Desktop run on the host, not in this container.
+      OLLAMA_URL: http://host.docker.internal:11434
+      BEEPER_API_URL: http://host.docker.internal:23373
+    extra_hosts:
+      - host.docker.internal:host-gateway # makes the line above work on Linux too
+    ports:
+      # Loopback only: one static token guards your entire vault. Change to "8000:8000" only
+      # if you've deliberately decided to expose this beyond the host.
+      - 127.0.0.1:8000:8000
+    volumes:
+      # Read-only: the vault is read-only to this project by design. Set VAULT_PATH in .env to
+      # its absolute path on the host. Obsidian indexing is optional (per README), so an unset
+      # VAULT_PATH falls back to an empty, gitignored stand-in rather than refusing to start.
+      - ${VAULT_PATH:-./data/no-vault}:/vault:ro
+      # SQLite database and the fetch cache. The cache is what stops a re-run from re-spending
+      # Firecrawl credits, so it must survive a container recreation.
+      - garden-data:/data
+
+volumes:
+  garden-data:

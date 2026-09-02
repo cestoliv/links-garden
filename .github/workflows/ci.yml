@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call: {} # lets publish-image.yml gate the image build on these same two jobs
 
 jobs:
   python:

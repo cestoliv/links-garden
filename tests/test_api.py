@@ -94,13 +94,28 @@ def _settings(tmp_path: Path, *, token: str = _TOKEN) -> Settings:
 
 
 def _make_app(
-    tmp_path: Path, *, token: str = _TOKEN, fetcher: Fetcher | None = None
+    tmp_path: Path,
+    *,
+    token: str = _TOKEN,
+    fetcher: Fetcher | None = None,
+    frontend_dist: Path | None = None,
 ) -> tuple[TestClient, sqlite3.Connection]:
     settings = _settings(tmp_path, token=token)
-    app = create_app(settings, fetcher=fetcher, embedder=_FakeEmbedder())
+    app = create_app(
+        settings, fetcher=fetcher, embedder=_FakeEmbedder(), frontend_dist=frontend_dist
+    )
     # create_app already ran the schema through its own throwaway connection; this one is only
     # for fixture setup, separate from whatever connection each request opens for itself.
     return TestClient(app), connect(settings.database_path)
+
+
+def _build_fake_dist(tmp_path: Path) -> Path:
+    """A minimal stand-in for `vite build`'s output: an `index.html` plus one built asset."""
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html>SPA-INDEX</html>")
+    (dist_dir / "assets" / "app.js").write_text("console.log('app')")
+    return dist_dir
 
 
 def _insert_document(
@@ -601,3 +616,61 @@ def test_ingest_stores_document_under_caller_marker(tmp_path: Path) -> None:
         "SELECT source FROM documents WHERE id = ?", (body["document_id"],)
     ).fetchone()
     assert row["source"] == "mcp"
+
+
+# The SPA mount is skipped entirely when there's no build to serve, so a checkout with no
+# `npm run build` yet still runs `garden serve` -- an unmatched path just 404s as it always did.
+def test_spa_not_mounted_without_frontend_dist(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, frontend_dist=tmp_path / "no-such-dist")
+    assert client.get("/", headers=_HEADERS).status_code == 404
+    assert client.get("/health").status_code == 200  # the API itself still works
+
+
+# An API route always wins over the SPA catch-all, even for a path an API router itself 404s on.
+def test_api_route_wins_over_spa_fallback(tmp_path: Path) -> None:
+    dist_dir = _build_fake_dist(tmp_path)
+    client, _conn = _make_app(tmp_path, frontend_dist=dist_dir)
+    response = client.get("/documents/999999", headers=_HEADERS)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "document not found"}
+
+
+# The shell and its assets load with no token, because a browser attaches no bearer header to
+# its first navigation to the page. They hold no garden data.
+def test_spa_serves_shell_and_assets_without_a_token(tmp_path: Path) -> None:
+    dist_dir = _build_fake_dist(tmp_path)
+    client, _conn = _make_app(tmp_path, frontend_dist=dist_dir)
+
+    shell_response = client.get("/")
+    assert shell_response.status_code == 200
+    assert shell_response.text == "<html>SPA-INDEX</html>"
+
+    asset_response = client.get("/assets/app.js")
+    assert asset_response.status_code == 200
+    assert asset_response.text == "console.log('app')"
+
+
+# Serving the dashboard must not turn the token gate into a blocklist. An unmatched path is not
+# a built asset, so it stays behind the token: that is what keeps an API route added later
+# protected by default instead of exempt until someone remembers to list it.
+def test_unmatched_path_still_requires_a_token(tmp_path: Path) -> None:
+    dist_dir = _build_fake_dist(tmp_path)
+    client, _conn = _make_app(tmp_path, frontend_dist=dist_dir)
+
+    assert client.get("/not-a-built-asset").status_code == 401
+    assert client.get("/documents/1").status_code == 401
+
+    # With a token it reaches the SPA router, which owns no URL beyond `/` and its assets.
+    assert client.get("/not-a-built-asset", headers=_HEADERS).status_code == 404
+
+
+# `..` in a request path must not escape the built directory and serve the rest of the disk.
+def test_spa_refuses_to_serve_files_outside_dist(tmp_path: Path) -> None:
+    dist_dir = _build_fake_dist(tmp_path)
+    (tmp_path / "secret.txt").write_text("BEEPER_ACCESS_TOKEN=live-token")
+    client, _conn = _make_app(tmp_path, frontend_dist=dist_dir)
+
+    for path in ("/../secret.txt", "/assets/../../secret.txt"):
+        response = client.get(path, headers=_HEADERS)
+        assert response.status_code == 404, path
+        assert "live-token" not in response.text
