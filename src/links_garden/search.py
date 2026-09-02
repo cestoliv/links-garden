@@ -126,9 +126,7 @@ def _vector_search(
         return {}
     query_vector = embedder.embed([query])[0]
     matrix: NDArray[np.float32] = np.stack([unpack_vector(row["embedding"]) for row in rows])
-    similarities = (matrix @ query_vector) / (
-        np.linalg.norm(matrix, axis=1) * np.linalg.norm(query_vector)
-    )
+    similarities = _cosine_similarities(matrix, query_vector)
     ranked: dict[int, _RankedDoc] = {}
     for idx in np.argsort(-similarities):
         row = rows[int(idx)]
@@ -143,6 +141,61 @@ def _vector_search(
             snippet=_chunk_snippet(row["text"]),
         )
     return ranked
+
+
+def _cosine_similarities(
+    matrix: NDArray[np.float32], vector: NDArray[np.float32]
+) -> NDArray[np.float32]:
+    return (matrix @ vector) / (np.linalg.norm(matrix, axis=1) * np.linalg.norm(vector))
+
+
+def find_related(conn: sqlite3.Connection, document_id: int, *, limit: int = 10) -> list[Hit]:
+    """Nearest other documents by embedding: the "what else did I save about this" view.
+
+    No query embedding call: the anchor document's own already-stored chunk vectors, averaged
+    into a centroid, stand in for a query vector. Cheap enough for a graph view to call per
+    click, and it means `api.py`'s `/documents/{id}/related` never touches ollama either.
+    """
+    own_vectors = [
+        unpack_vector(row["embedding"])
+        for row in conn.execute(
+            "SELECT embedding FROM chunks WHERE document_id = ? AND embedding IS NOT NULL",
+            (document_id,),
+        ).fetchall()
+    ]
+    if not own_vectors:
+        return []
+    centroid: NDArray[np.float32] = np.mean(np.stack(own_vectors), axis=0).astype(np.float32)
+    rows = conn.execute(
+        "SELECT c.document_id, c.text, c.embedding, d.title, d.url, d.source "
+        "FROM chunks c JOIN documents d ON d.id = c.document_id "
+        f"WHERE {SELECTOR_SQL} AND c.embedding IS NOT NULL AND c.document_id != ?",
+        (document_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    matrix: NDArray[np.float32] = np.stack([unpack_vector(row["embedding"]) for row in rows])
+    similarities = _cosine_similarities(matrix, centroid)
+    best: dict[int, tuple[float, sqlite3.Row]] = {}
+    for idx in np.argsort(-similarities):
+        row = rows[int(idx)]
+        doc_id: int = row["document_id"]
+        if doc_id not in best:
+            best[doc_id] = (float(similarities[int(idx)]), row)
+    ranked = sorted(best.values(), key=lambda item: -item[0])[:limit]
+    return [
+        Hit(
+            document_id=row["document_id"],
+            title=row["title"],
+            url=row["url"],
+            source=row["source"],
+            snippet=_chunk_snippet(row["text"]),
+            score=score,
+            fts_rank=None,
+            vector_rank=rank,
+        )
+        for rank, (score, row) in enumerate(ranked, start=1)
+    ]
 
 
 def _chunk_snippet(text: str) -> str:

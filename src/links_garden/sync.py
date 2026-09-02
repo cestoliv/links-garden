@@ -63,9 +63,13 @@ def sync_vault(
     return report
 
 
-def ingest_url(conn: sqlite3.Connection, url: str, fetcher: Fetcher) -> Extracted:
-    """Fetch, extract and store one ad hoc URL as a `source='manual'` document.
+def ingest_url(
+    conn: sqlite3.Connection, url: str, fetcher: Fetcher, *, source: Source = "manual"
+) -> Extracted:
+    """Fetch, extract and store one ad hoc URL as a document under `source`.
 
+    `source` defaults to `manual` for the CLI and dashboard; the API passes `mcp` when the
+    caller marks itself as an agent, so DESIGN.md's per-source provenance holds on this path too.
     Shares `resolve_status` with `_sync_url`: a fetch the run never actually attempted,
     because the cap was hit mid-extraction, is left `pending` rather than recorded as `failed`.
     """
@@ -73,13 +77,13 @@ def ingest_url(conn: sqlite3.Connection, url: str, fetcher: Fetcher) -> Extracte
     status = resolve_status(extracted, fetcher)
     if status == "skipped":
         row = conn.execute(
-            "SELECT id FROM documents WHERE source = 'manual' AND source_ref = ?", (url,)
+            "SELECT id FROM documents WHERE source = ? AND source_ref = ?", (source, url)
         ).fetchone()
-        _mark_pending_if_new(conn, row, "manual", url, url, None)
+        _mark_pending_if_new(conn, row, source, url, url, None)
         return extracted
     upsert_extracted(
         conn,
-        source="manual",
+        source=source,
         source_ref=url,
         url=url,
         parent_document_id=None,
