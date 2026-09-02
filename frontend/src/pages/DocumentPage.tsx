@@ -6,6 +6,8 @@ import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { Document, GraphAnchor, Hit } from '../api/types'
 import { Button } from '../components/Button'
+import { buttonClassName } from '../components/buttonClassName'
+import { Link } from '../components/Link'
 import { StatusBadge } from '../components/StatusBadge'
 
 interface DocumentPageProps {
@@ -174,16 +176,15 @@ function DocumentHeader({ document, onCenterGraph }: { document: Document; onCen
             </a>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0"
-          onClick={() => {
+        <Link
+          href={`/graph/${String(document.id)}`}
+          onNavigate={() => {
             onCenterGraph({ id: document.id, title: document.title, url: document.url, embedded: document.embedded })
           }}
+          className={`shrink-0 ${buttonClassName({ variant: 'ghost', size: 'sm' })}`}
         >
           Center the graph on this document
-        </Button>
+        </Link>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">
         <span className="flex items-center gap-1.5">
@@ -250,15 +251,15 @@ function RelatedDocuments({ state, onOpenDocument }: { state: RelatedState; onOp
         <ul className="mt-2 flex flex-col gap-1">
           {state.hits.map((hit) => (
             <li key={hit.document_id}>
-              <button
-                type="button"
-                onClick={() => {
+              <Link
+                href={`/documents/${String(hit.document_id)}`}
+                onNavigate={() => {
                   onOpenDocument(hit.document_id)
                 }}
                 className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
               >
                 {hit.title ?? hit.url ?? 'Untitled'}
-              </button>
+              </Link>
             </li>
           ))}
         </ul>

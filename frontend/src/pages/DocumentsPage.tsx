@@ -3,7 +3,8 @@ import type { RefObject } from 'react'
 import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { DocumentListItem, GraphAnchor } from '../api/types'
-import { Button } from '../components/Button'
+import { buttonClassName } from '../components/buttonClassName'
+import { Link } from '../components/Link'
 import { StatusBadge } from '../components/StatusBadge'
 
 interface DocumentsPageProps {
@@ -168,27 +169,26 @@ function DocumentRow({
     <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <button
-            type="button"
-            onClick={() => {
+          <Link
+            href={`/documents/${String(item.id)}`}
+            onNavigate={() => {
               onOpenDocument(item.id)
             }}
             className="truncate text-left font-medium text-emerald-700 hover:underline dark:text-emerald-400"
           >
             {item.title ?? item.url ?? 'Untitled'}
-          </button>
+          </Link>
           <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{item.source}</p>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0"
-          onClick={() => {
+        <Link
+          href={`/graph/${String(item.id)}`}
+          onNavigate={() => {
             onOpenGraph({ id: item.id, title: item.title, url: item.url, embedded: item.embedded })
           }}
+          className={`shrink-0 ${buttonClassName({ variant: 'ghost', size: 'sm' })}`}
         >
           Graph
-        </Button>
+        </Link>
       </div>
       {item.error !== null && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{item.error}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">

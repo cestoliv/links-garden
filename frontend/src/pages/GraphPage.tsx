@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { DocumentListItem, GraphAnchor, Hit } from '../api/types'
+import { Link } from '../components/Link'
 
 interface GraphPageProps {
   client: ApiClient
@@ -195,20 +196,20 @@ function RecentDocuments({
         <ul className="mt-2 flex flex-col gap-1">
           {state.items.map((item) => (
             <li key={item.id}>
-              <button
-                type="button"
-                onClick={() => {
+              <Link
+                href={`/graph/${String(item.id)}`}
+                onNavigate={() => {
                   onPick({ id: item.id, title: item.title, url: item.url, embedded: item.embedded })
                 }}
                 aria-current={activeId === item.id ? 'true' : undefined}
-                className={`w-full truncate rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-150 ${
+                className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-150 ${
                   activeId === item.id
                     ? 'bg-emerald-700 text-white dark:bg-emerald-600'
                     : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
                 }`}
               >
                 {item.title ?? item.url ?? 'Untitled'}
-              </button>
+              </Link>
             </li>
           ))}
         </ul>

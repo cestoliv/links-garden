@@ -126,8 +126,15 @@ uv run garden serve            # API on 127.0.0.1:8000
 cd frontend && npm run dev     # dashboard on http://localhost:5174
 ```
 
-Open `http://localhost:5174` and sign in with your `API_TOKEN`. The token is held in memory for the
-session and is never written to storage.
+Open `http://localhost:5174` and sign in with your `API_TOKEN`.
+
+Every page has its own URL, so a link to a document, a search or a graph can be pasted and
+reopened. Signing in from a pasted link lands on the page it names.
+
+The token is exchanged for a session, and the browser holds only an `HttpOnly` cookie. JavaScript
+cannot read it, so the token itself never sits anywhere a script on the page could reach. The
+server stores only the session token's SHA-256, and signing out revokes the session rather than
+just forgetting it. `SESSION_MAX_AGE_DAYS` sets how long a session lasts, 30 days by default.
 
 If the API runs on another port, tell the dev server:
 
@@ -137,6 +144,22 @@ GARDEN_API_URL=http://127.0.0.1:9000 npm run dev
 
 A port mismatch shows up as a rejected token, not a connection error, so check the port before
 suspecting the token.
+
+## The HTTP API
+
+Every route lives under `/api`, so the dashboard can own the paths a browser navigates to. The
+dashboard's URLs and the API's never collide.
+
+Agents and scripts authenticate with the bearer header, not the cookie:
+
+```sh
+curl -s -H "Authorization: Bearer $API_TOKEN" \
+  'http://127.0.0.1:8000/api/search?q=tiktok+slideshow'
+```
+
+`GET /api/health` needs no credential, so a container healthcheck or an uptime monitor can use
+it. Do not probe `/` instead: the dashboard's own fallback answers it with the page shell even
+when the API cannot serve a request.
 
 ## Agents
 

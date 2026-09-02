@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     api_token: SecretStr = SecretStr("")
     database_path: Path = Path("data/garden.db")
+    session_max_age_days: int = Field(default=30, gt=0)
 
     @field_validator("vault_exclude", mode="before")
     @classmethod

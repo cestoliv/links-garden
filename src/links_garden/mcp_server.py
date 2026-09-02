@@ -129,5 +129,7 @@ def create_mcp_app(
         raise ValueError("API_TOKEN must be set; refusing to start an unauthenticated MCP server")
     mcp = build_mcp_server(settings, fetcher=fetcher, embedder=embedder)
     app = mcp.streamable_http_app()
-    app.add_middleware(BaseHTTPMiddleware, dispatch=api.auth_middleware(token))
+    app.add_middleware(
+        BaseHTTPMiddleware, dispatch=api.auth_middleware(token, settings.database_path)
+    )
     return app

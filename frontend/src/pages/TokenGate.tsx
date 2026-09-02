@@ -32,8 +32,8 @@ export function TokenGate({ error, busy, onSubmit }: TokenGateProps) {
       >
         <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Links Garden</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Enter the API token to connect. It stays in memory for this session only, never in
-          local storage.
+          Enter the API token to connect. It's exchanged for a session cookie and never stored in
+          this browser tab; sign out any time to revoke it.
         </p>
         <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-2" noValidate>
           <label

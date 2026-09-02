@@ -172,7 +172,10 @@ describe('DocumentPage', () => {
     )
     await screen.findByRole('heading', { name: 'Doc A' })
 
-    await userEvent.click(screen.getByRole('button', { name: 'Center the graph on this document' }))
+    const centerLink = screen.getByRole('link', { name: 'Center the graph on this document' })
+    expect(centerLink).toHaveAttribute('href', '/graph/7')
+
+    await userEvent.click(centerLink)
 
     expect(onCenterGraph).toHaveBeenCalledWith({ id: 7, title: 'Doc A', url: 'https://example.test/a', embedded: true })
   })
@@ -191,7 +194,10 @@ describe('DocumentPage', () => {
       />,
     )
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Doc C' }))
+    const neighbour = await screen.findByRole('link', { name: 'Doc C' })
+    expect(neighbour).toHaveAttribute('href', '/documents/9')
+
+    await userEvent.click(neighbour)
 
     expect(onOpenDocument).toHaveBeenCalledWith(9)
   })

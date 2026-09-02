@@ -158,7 +158,7 @@ describe('DocumentsPage', () => {
     await screen.findByText('Doc A')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Graph' }))
+    await user.click(screen.getByRole('link', { name: 'Graph' }))
 
     expect(onOpenGraph).toHaveBeenCalledWith({ id: 7, title: 'Doc A', url: 'https://example.test/a', embedded: true })
   })
@@ -175,7 +175,7 @@ describe('DocumentsPage', () => {
     await screen.findByText('Doc A')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Doc A' }))
+    await user.click(screen.getByRole('link', { name: 'Doc A' }))
 
     expect(onOpenDocument).toHaveBeenCalledWith(7)
   })

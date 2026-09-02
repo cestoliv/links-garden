@@ -3,12 +3,17 @@ import { useEffect, useState } from 'react'
 import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { Hit } from '../api/types'
+import { Link } from '../components/Link'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 
 interface SearchPageProps {
   client: ApiClient
   onUnauthorized: () => void
   onOpenDocument: (id: number) => void
+  /** The query from the URL (`?q=`), so a shared or reloaded search page shows its results. */
+  initialQuery: string
+  /** Keeps the URL in sync with what's typed, so the search itself is shareable. */
+  onQueryChange: (query: string) => void
 }
 
 type SearchState =
@@ -29,12 +34,16 @@ function hasWeakTopMatch(hits: Hit[]): boolean {
   return hits.length > 0 && hits[0].score <= RRF_SINGLE_SIDE_CEILING
 }
 
-export function SearchPage({ client, onUnauthorized, onOpenDocument }: SearchPageProps) {
-  const [query, setQuery] = useState('')
+export function SearchPage({ client, onUnauthorized, onOpenDocument, initialQuery, onQueryChange }: SearchPageProps) {
+  const [query, setQuery] = useState(initialQuery)
   const debouncedQuery = useDebouncedValue(query, 400)
   const [state, setState] = useState<SearchState>({ status: 'idle' })
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const reduceMotion = useReducedMotion()
+
+  useEffect(() => {
+    onQueryChange(debouncedQuery)
+  }, [debouncedQuery, onQueryChange])
 
   useEffect(() => {
     const trimmed = debouncedQuery.trim()
@@ -228,15 +237,15 @@ function ResultCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <button
-            type="button"
-            onClick={() => {
+          <Link
+            href={`/documents/${String(hit.document_id)}`}
+            onNavigate={() => {
               onOpenDocument(hit.document_id)
             }}
             className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
           >
             {hit.title ?? hit.url ?? 'Untitled'}
-          </button>
+          </Link>
           <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">
             {hit.source}
           </p>

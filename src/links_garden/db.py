@@ -9,7 +9,12 @@ Source = Literal["signal", "obsidian", "manual", "mcp"]
 # Bump this and append a matching entry to _MIGRATIONS for any future schema change. Both
 # CREATE TABLE IF NOT EXISTS (new tables) and this constant (new columns on existing tables)
 # have to move together, or an upgraded database silently keeps missing columns forever.
-_SCHEMA_VERSION = 3
+#
+# Version 4 added only the `sessions` table, which needs no _MIGRATIONS entry: `executescript`
+# runs the whole _SCHEMA unconditionally on every `initialize`, so `CREATE TABLE IF NOT EXISTS`
+# already creates it for an old database too. Only a new column on an existing table needs an
+# entry here, since a repeated `ALTER TABLE ADD COLUMN` errors instead of doing nothing.
+_SCHEMA_VERSION = 4
 
 # Each entry upgrades a database stamped at (key - 1) up to key, as (column, statement) pairs.
 # Never edit a past entry: a database already migrated past it will never see the change.
@@ -99,6 +104,16 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 CREATE TABLE IF NOT EXISTS signal_reactions (
     message_id  TEXT PRIMARY KEY,
     reacted_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Dashboard login sessions behind the HttpOnly cookie. Only the token's hash is stored, same
+-- reasoning as a password digest: a copy of this table leaks no usable credential. `token_hash`
+-- is UNIQUE, which is also the index a session lookup needs.
+CREATE TABLE IF NOT EXISTS sessions (
+    id           INTEGER PRIMARY KEY,
+    token_hash   TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at   TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_status  ON documents(status);
@@ -221,3 +236,38 @@ def is_tombstoned(conn: sqlite3.Connection, source: Source, source_ref: str) -> 
         (source, source_ref),
     ).fetchone()
     return row is not None
+
+
+def create_session(conn: sqlite3.Connection, token_hash: str, expires_at: str) -> None:
+    """Record a new session. `token_hash` and `expires_at` are computed by the caller: this file
+    only stores what it's given, matching every other write in this module."""
+    conn.execute(
+        "INSERT INTO sessions (token_hash, expires_at) VALUES (?, ?)", (token_hash, expires_at)
+    )
+    conn.commit()
+
+
+def has_valid_session(conn: sqlite3.Connection, token_hash: str) -> bool:
+    """Whether a non-expired session exists for this hash.
+
+    An expired row is deleted here rather than merely ignored, so `sessions` doesn't grow
+    forever with rows nothing will ever match again.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",
+        (token_hash,),
+    ).fetchone()
+    if row is not None:
+        return True
+    conn.execute(
+        "DELETE FROM sessions WHERE token_hash = ? AND expires_at <= datetime('now')",
+        (token_hash,),
+    )
+    conn.commit()
+    return False
+
+
+def delete_session(conn: sqlite3.Connection, token_hash: str) -> None:
+    """Revoke a session outright, expired or not -- what signing out calls."""
+    conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+    conn.commit()

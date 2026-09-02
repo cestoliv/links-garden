@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '../api/client'
+import { describeError, isUnauthorized } from '../api/client'
 import type { GraphAnchor } from '../api/types'
+import type { Route } from '../hooks/useRouter'
+import { useRouter } from '../hooks/useRouter'
 import { DocumentPage } from '../pages/DocumentPage'
 import { DocumentsPage } from '../pages/DocumentsPage'
 import { GraphPage } from '../pages/GraphPage'
@@ -8,16 +11,15 @@ import { ReviewPage } from '../pages/ReviewPage'
 import { SearchPage } from '../pages/SearchPage'
 import { SetAdminPage } from '../pages/SetAdminPage'
 import { SetsPage } from '../pages/SetsPage'
+import { Link } from './Link'
 
-type PageId = 'search' | 'documents' | 'sets' | 'review' | 'admin' | 'graph' | 'document'
-
-const PAGES: { id: PageId; label: string }[] = [
-  { id: 'search', label: 'Search' },
-  { id: 'documents', label: 'Documents' },
-  { id: 'sets', label: 'Sets' },
-  { id: 'review', label: 'Review' },
-  { id: 'admin', label: 'Set admin' },
-  { id: 'graph', label: 'Graph' },
+const NAV_ITEMS: { path: string; label: string; matches: Route['name'] }[] = [
+  { path: '/', label: 'Search', matches: 'search' },
+  { path: '/documents', label: 'Documents', matches: 'documents' },
+  { path: '/sets', label: 'Sets', matches: 'sets' },
+  { path: '/review', label: 'Review', matches: 'review' },
+  { path: '/admin', label: 'Set admin', matches: 'admin' },
+  { path: '/graph', label: 'Graph', matches: 'graph' },
 ]
 
 interface AppShellProps {
@@ -29,27 +31,74 @@ interface AppShellProps {
 }
 
 export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
-  const [page, setPage] = useState<PageId>('search')
-  // Lives here, alongside the page id, so a control on another page (Documents) can root the
-  // graph on a document and switch to it in one click. No Context, no router: this is the whole
-  // amount of cross-page state the dashboard needs.
+  const { route, navigate } = useRouter()
+  // The graph view's anchor id lives in the URL (Decision 4): this resolves it to the
+  // title/url/embedded GraphPage needs, so a typed-in /graph/42 works exactly like clicking
+  // there from inside the app, and GraphPage itself never has to know about routing.
   const [graphAnchor, setGraphAnchor] = useState<GraphAnchor | null>(null)
-  // The document view's own state: which document is open, and which page to return to. Back
-  // always lands on the page that was current the last time the view was entered from outside
-  // itself, so following a neighbour link from inside the view never overwrites it.
-  const [documentId, setDocumentId] = useState<number | null>(null)
-  const [documentReturnPage, setDocumentReturnPage] = useState<PageId>('search')
+  const [graphAnchorError, setGraphAnchorError] = useState<string | null>(null)
+  const anchorId = route.name === 'graph' ? route.anchorId : null
 
-  function openGraph(anchor: GraphAnchor) {
-    setGraphAnchor(anchor)
-    setPage('graph')
-  }
+  useEffect(() => {
+    if (anchorId === null) {
+      setGraphAnchor(null)
+      setGraphAnchorError(null)
+      return
+    }
+    let cancelled = false
+    setGraphAnchorError(null)
+    client
+      .getDocument(anchorId)
+      .then((document) => {
+        if (cancelled) return
+        setGraphAnchor({ id: document.id, title: document.title, url: document.url, embedded: document.embedded })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        if (isUnauthorized(error)) {
+          onUnauthorized()
+          return
+        }
+        setGraphAnchorError(describeError(error))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [anchorId, client, onUnauthorized])
 
-  function openDocument(id: number) {
-    if (page !== 'document') setDocumentReturnPage(page)
-    setDocumentId(id)
-    setPage('document')
-  }
+  const openDocument = useCallback(
+    (id: number) => {
+      navigate(`/documents/${String(id)}`)
+    },
+    [navigate],
+  )
+
+  const openGraph = useCallback(
+    (anchor: GraphAnchor) => {
+      navigate(`/graph/${String(anchor.id)}`)
+    },
+    [navigate],
+  )
+
+  const selectSet = useCallback(
+    (name: string) => {
+      navigate(`/sets/${encodeURIComponent(name)}`)
+    },
+    [navigate],
+  )
+
+  // Replaces the current entry instead of pushing: a fresh entry per keystroke would make Back
+  // step through the search box one character at a time instead of leaving the page.
+  const changeQuery = useCallback(
+    (query: string) => {
+      navigate(query.trim() === '' ? '/' : `/?q=${encodeURIComponent(query)}`, { replace: true })
+    },
+    [navigate],
+  )
+
+  const goBack = useCallback(() => {
+    window.history.back()
+  }, [])
 
   return (
     <div className="min-h-dvh">
@@ -59,22 +108,22 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
             Links Garden
           </span>
           <nav className="flex gap-1">
-            {PAGES.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  setPage(item.id)
+            {NAV_ITEMS.map((item) => (
+              <Link
+                key={item.path}
+                href={item.path}
+                onNavigate={() => {
+                  navigate(item.path)
                 }}
-                aria-current={page === item.id ? 'page' : undefined}
+                aria-current={route.name === item.matches ? 'page' : undefined}
                 className={`rounded-md px-3 py-1.5 text-sm transition-colors duration-150 ${
-                  page === item.id
+                  route.name === item.matches
                     ? 'bg-emerald-700 text-white dark:bg-emerald-600'
                     : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
                 }`}
               >
                 {item.label}
-              </button>
+              </Link>
             ))}
           </nav>
         </div>
@@ -87,42 +136,118 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
         </button>
       </header>
       <main>
-        {page === 'search' && (
-          <SearchPage client={client} onUnauthorized={onUnauthorized} onOpenDocument={openDocument} />
-        )}
-        {page === 'documents' && (
-          <DocumentsPage
-            client={client}
-            onUnauthorized={onUnauthorized}
-            onOpenGraph={openGraph}
-            onOpenDocument={openDocument}
-          />
-        )}
-        {page === 'sets' && <SetsPage client={client} onUnauthorized={onUnauthorized} />}
-        {page === 'review' && <ReviewPage client={client} onUnauthorized={onUnauthorized} />}
-        {page === 'admin' && <SetAdminPage client={client} onUnauthorized={onUnauthorized} />}
-        {page === 'graph' && (
-          <GraphPage
-            client={client}
-            anchor={graphAnchor}
-            onAnchorChange={setGraphAnchor}
-            onOpenDocument={openDocument}
-            onUnauthorized={onUnauthorized}
-          />
-        )}
-        {page === 'document' && documentId !== null && (
-          <DocumentPage
-            client={client}
-            documentId={documentId}
-            onOpenDocument={openDocument}
-            onCenterGraph={openGraph}
-            onBack={() => {
-              setPage(documentReturnPage)
-            }}
-            onUnauthorized={onUnauthorized}
-          />
-        )}
+        <RouteContent
+          route={route}
+          client={client}
+          onUnauthorized={onUnauthorized}
+          openDocument={openDocument}
+          openGraph={openGraph}
+          selectSet={selectSet}
+          changeQuery={changeQuery}
+          goBack={goBack}
+          navigate={navigate}
+          graphAnchor={graphAnchor}
+          graphAnchorError={graphAnchorError}
+        />
       </main>
+    </div>
+  )
+}
+
+interface RouteContentProps {
+  route: Route
+  client: ApiClient
+  onUnauthorized: () => void
+  openDocument: (id: number) => void
+  openGraph: (anchor: GraphAnchor) => void
+  selectSet: (name: string) => void
+  changeQuery: (query: string) => void
+  goBack: () => void
+  navigate: (path: string) => void
+  graphAnchor: GraphAnchor | null
+  graphAnchorError: string | null
+}
+
+// Split out of AppShell so its cyclomatic complexity (one branch per route, plus the graph
+// view's error/ready split) is counted on its own instead of piling onto AppShell's.
+function RouteContent({
+  route,
+  client,
+  onUnauthorized,
+  openDocument,
+  openGraph,
+  selectSet,
+  changeQuery,
+  goBack,
+  navigate,
+  graphAnchor,
+  graphAnchorError,
+}: RouteContentProps) {
+  if (route.name === 'search') {
+    return (
+      <SearchPage
+        client={client}
+        onUnauthorized={onUnauthorized}
+        onOpenDocument={openDocument}
+        initialQuery={route.query}
+        onQueryChange={changeQuery}
+      />
+    )
+  }
+  if (route.name === 'documents') {
+    return <DocumentsPage client={client} onUnauthorized={onUnauthorized} onOpenGraph={openGraph} onOpenDocument={openDocument} />
+  }
+  if (route.name === 'sets') {
+    return <SetsPage client={client} onUnauthorized={onUnauthorized} activeSet={route.active} onSelectSet={selectSet} />
+  }
+  if (route.name === 'review') return <ReviewPage client={client} onUnauthorized={onUnauthorized} />
+  if (route.name === 'admin') return <SetAdminPage client={client} onUnauthorized={onUnauthorized} />
+  if (route.name === 'graph') {
+    if (graphAnchorError !== null) {
+      return (
+        <p role="alert" className="mx-auto max-w-6xl px-6 py-10 text-sm text-red-600 dark:text-red-400">
+          {graphAnchorError}
+        </p>
+      )
+    }
+    return (
+      <GraphPage
+        client={client}
+        anchor={graphAnchor}
+        onAnchorChange={openGraph}
+        onOpenDocument={openDocument}
+        onUnauthorized={onUnauthorized}
+      />
+    )
+  }
+  if (route.name === 'document') {
+    return (
+      <DocumentPage
+        client={client}
+        documentId={route.id}
+        onOpenDocument={openDocument}
+        onCenterGraph={openGraph}
+        onBack={goBack}
+        onUnauthorized={onUnauthorized}
+      />
+    )
+  }
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Page not found</h1>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Nothing lives at{' '}
+        <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs dark:bg-zinc-800">{route.path}</code>.
+      </p>
+      <Link
+        href="/"
+        onNavigate={() => {
+          navigate('/')
+        }}
+        className="mt-4 inline-block text-sm text-emerald-700 hover:underline dark:text-emerald-400"
+      >
+        Back to search
+      </Link>
     </div>
   )
 }

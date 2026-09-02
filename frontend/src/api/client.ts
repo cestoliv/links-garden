@@ -73,9 +73,9 @@ export interface ApiClient {
   ingest: (url: string, source?: IngestSource) => Promise<IngestResult>
 }
 
-/** A client bound to one base URL and token. Every route in the API requires the token, so
- * there is no unauthenticated variant to fall back to. */
-export function createApiClient(baseUrl: string, token: string): ApiClient {
+/** A client bound to one base URL. Auth rides on the browser's session cookie, sent
+ * automatically on every same-origin request, so there is no token to attach here. */
+export function createApiClient(baseUrl: string): ApiClient {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // Headers merged via the Headers API, not object spread: init.headers can be a plain
     // object, a Headers instance, or an array of tuples, and only Headers handles all three.
@@ -83,8 +83,7 @@ export function createApiClient(baseUrl: string, token: string): ApiClient {
     if (init.body && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json')
     }
-    headers.set('Authorization', `Bearer ${token}`)
-    const response = await fetch(`${baseUrl}${path}`, { ...init, headers })
+    const response = await fetch(`${baseUrl}/api${path}`, { ...init, headers })
     if (!response.ok) {
       throw new ApiError(response.status, await readErrorDetail(response))
     }
@@ -125,4 +124,32 @@ export function createApiClient(baseUrl: string, token: string): ApiClient {
     ingest: (url, source) =>
       request('/ingest', { method: 'POST', body: JSON.stringify({ url, source }) }),
   }
+}
+
+// Session endpoints, called before any `ApiClient` exists: signing in is what makes one usable.
+
+/** Exchanges an API token for a session cookie. Throws `ApiError` (401 for a wrong token) on
+ * failure. */
+export async function login(baseUrl: string, token: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+}
+
+/** True for a still-valid session cookie, false for none/expired (401). Anything else (a network
+ * failure, a 5xx) throws, so a real outage isn't reported as "signed out". */
+export async function checkSession(baseUrl: string): Promise<boolean> {
+  const response = await fetch(`${baseUrl}/api/session`)
+  if (response.status === 401) return false
+  if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+  return true
+}
+
+/** Revokes the session server-side and clears the cookie. */
+export async function logout(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/session`, { method: 'DELETE' })
+  if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
 }
