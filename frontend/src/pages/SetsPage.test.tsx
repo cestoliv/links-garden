@@ -34,7 +34,7 @@ describe('SetsPage', () => {
       listSetRecords: vi.fn().mockResolvedValue([madeUpRecord]),
     })
 
-    render(<SetsPage client={client} onUnauthorized={vi.fn()} />)
+    render(<SetsPage client={client} onUnauthorized={vi.fn()} activeSet={null} onSelectSet={vi.fn()} />)
 
     await waitFor(() => { expect(screen.getByText('Favorite Snack')).toBeInTheDocument() })
     expect(screen.getByText('Spice Level')).toBeInTheDocument()
@@ -48,7 +48,7 @@ describe('SetsPage', () => {
       listSetRecords: vi.fn().mockResolvedValue([]),
     })
 
-    render(<SetsPage client={client} onUnauthorized={vi.fn()} />)
+    render(<SetsPage client={client} onUnauthorized={vi.fn()} activeSet={null} onSelectSet={vi.fn()} />)
 
     await waitFor(() => {
       expect(screen.getByText(/No records in made_up_set yet/)).toBeInTheDocument()
@@ -77,7 +77,7 @@ describe('SetsPage', () => {
       listSetRecords: vi.fn().mockResolvedValue([record]),
     })
 
-    render(<SetsPage client={client} onUnauthorized={vi.fn()} />)
+    render(<SetsPage client={client} onUnauthorized={vi.fn()} activeSet={null} onSelectSet={vi.fn()} />)
 
     const stepsCell = await screen.findByText(/Step 1\./)
     const scrollBox = stepsCell.closest('div')

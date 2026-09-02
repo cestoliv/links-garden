@@ -238,7 +238,7 @@ describe('GraphPage', () => {
     await screen.findByRole('img', { name: 'Graph rooted on Doc A' })
     expect(getRelated).toHaveBeenCalledTimes(2) // A's first hop, then B's second hop
 
-    await userEvent.click(screen.getByRole('button', { name: 'Doc B' }))
+    await userEvent.click(screen.getByRole('link', { name: 'Doc B' }))
 
     // Rooted on B now, with A as its neighbour: two fresh calls for B's own two hops.
     await screen.findByRole('img', { name: 'Graph rooted on Doc B' })
@@ -246,7 +246,7 @@ describe('GraphPage', () => {
       expect(getRelated).toHaveBeenCalledTimes(4)
     })
 
-    await userEvent.click(screen.getByRole('button', { name: 'Doc A' }))
+    await userEvent.click(screen.getByRole('link', { name: 'Doc A' }))
 
     // Back on A, already computed once above — served from cache, no fifth call.
     await screen.findByRole('img', { name: 'Graph rooted on Doc A' })

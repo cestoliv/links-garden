@@ -1,10 +1,19 @@
-"""HTTP API: bearer-gated read routes, the three writes DESIGN.md allows, and set administration
-(create/update/delete) that DESIGN.md's dashboard section names but never itemized as API writes.
+"""HTTP API: session- or bearer-gated routes under `/api`, the three writes DESIGN.md allows, set
+administration (create/update/delete) that DESIGN.md's dashboard section names but never
+itemized as API writes, and the dashboard's own login/session routes.
+
+The whole HTTP surface lives under `/api` (`/api/search`, `/api/documents/{id}`, ...); everything
+else is the built dashboard shell, served by `_spa_router` with a client-side router of its own,
+so a path like `/documents/42` can be a real, shareable URL and, once prefixed, a JSON endpoint
+too without the two colliding.
 
 The repo is public and `.env` holds live secrets, so the auth check runs as ASGI middleware
 rather than a per-route `Depends`: middleware wraps every request before routing decides which
-handler (or which of FastAPI's own `/docs`, `/redoc`, `/openapi.json`) would run, so there is no
-route, including the generated docs, that a `Depends` could accidentally miss.
+handler (or which of FastAPI's own `/api/docs`, `/api/redoc`, `/api/openapi.json`) would run, so
+there is no route, including the generated docs, that a `Depends` could accidentally miss. A
+request is authorized by either a valid `Authorization: Bearer` header (agents, curl, MCP) or a
+valid session cookie (the dashboard, minted by `POST /api/session`); everything under `/api`
+requires one of the two, except that one login route itself.
 
 Route handlers are thin: each calls a plain, importable function below (`get_document`,
 `list_set_records`, `list_review`, `patch_record`, `ingest`) and translates its result into an
@@ -24,10 +33,12 @@ origin, which is what removes the need for CORS headers here at all.
 
 import base64
 import dataclasses
+import hashlib
 import json
 import secrets
 import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -36,7 +47,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from links_garden.config import Settings
-from links_garden.db import Source, connect, initialize, tombstone
+from links_garden.db import (
+    Source,
+    connect,
+    create_session,
+    delete_session,
+    has_valid_session,
+    initialize,
+    tombstone,
+)
 from links_garden.embed import SELECTOR_SQL, Embedder, EmbedderLike
 from links_garden.fetch import Fetcher
 from links_garden.search import Hit, find_related, search
@@ -508,44 +527,148 @@ def is_authorized(header: str | None, token: str) -> bool:
     return secrets.compare_digest(credential, token)
 
 
+# The cookie set by POST /api/session and read back by every other protected request. Holds the
+# raw session token, never its hash -- exactly the plaintext-over-the-wire, hashed-at-rest split
+# a bearer token already has, just carried in a cookie instead of a header.
+_SESSION_COOKIE_NAME = "session"
+
+
+def _hash_session_token(session_token: str) -> str:
+    return hashlib.sha256(session_token.encode()).hexdigest()
+
+
+def _session_expiry(max_age_days: int) -> str:
+    """Same `YYYY-MM-DD HH:MM:SS` UTC text `_iso` documents for `datetime('now')`, so
+    `has_valid_session`'s `expires_at > datetime('now')` compares correctly as plain strings."""
+    return (datetime.now(UTC) + timedelta(days=max_age_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_authorized_request(request: Request, token: str, database_path: Path) -> bool:
+    """Either credential authorizes a request: a valid `Authorization: Bearer` header (agents,
+    curl, MCP) or a valid session cookie (the dashboard). Bearer is checked first since it needs
+    no database access, which keeps the common agent request cheap.
+    """
+    if is_authorized(request.headers.get("authorization"), token):
+        return True
+    session_token = request.cookies.get(_SESSION_COOKIE_NAME)
+    if session_token is None:
+        return False
+    conn = connect(database_path)
+    try:
+        return has_valid_session(conn, _hash_session_token(session_token))
+    finally:
+        conn.close()
+
+
 def _public_file(dist_dir: Path, path: str) -> Path | None:
-    """Return the built dashboard file `path` maps to, or None when it maps to no such file.
+    """Return the built dashboard file `path` maps to, the SPA shell as a fallback, or None when
+    `path` must be refused outright.
 
-    This is the single definition of the app's unauthenticated surface. The middleware exempts
-    exactly what this serves and `_spa_router` serves exactly what this returns, so the two can
-    never drift apart. Anything it does not name stays behind the token, which keeps a route
-    added later protected by default.
+    This is the single definition of the app's public static surface. `path` is untrusted
+    request input: the candidate is resolved and confirmed to sit under `dist_dir` first, which
+    closes off a `..` escape into the rest of the filesystem and is the only case this returns
+    None for. Anything that resolves safely under `dist_dir` but names no real file falls back to
+    `index.html` instead, which is what lets the client-side router own arbitrary paths like
+    `/documents/42`: a fresh tab's first request for that path has no server-side route to match,
+    so it has to get the same shell `/` would.
 
-    The shell and its assets have to load before the user has entered a token, because a browser
-    attaches no bearer header to its first navigation. They carry no garden data: `index.html` is
-    an empty mount point and the JS bundle is the same code any visitor can read from the public
-    repository. The data behind them still needs the token.
-
-    `path` is untrusted request input, so the candidate is resolved and confirmed to sit under
-    `dist_dir`, which closes off a `..` escape into the rest of the filesystem.
+    The shell and its assets carry no garden data -- `index.html` is an empty mount point and the
+    JS bundle is the same code any visitor can read from the public repository -- which is why
+    this whole surface, fallback included, stays outside the token gate.
     """
     if path == "/":
         return dist_dir / "index.html"
     candidate = (dist_dir / path.lstrip("/")).resolve()
-    if candidate.is_relative_to(dist_dir) and candidate.is_file():
-        return candidate
-    return None
+    if not candidate.is_relative_to(dist_dir):
+        return None
+    return candidate if candidate.is_file() else dist_dir / "index.html"
 
 
 def auth_middleware(
-    token: str, dist_dir: Path | None = None
+    token: str,
+    database_path: Path,
+    *,
+    is_public: Callable[[Request], bool] | None = None,
 ) -> Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]]:
+    """Build the ASGI auth middleware shared by the dashboard API and the MCP server, so the two
+    services can never drift into making a different access decision from the same credential.
+
+    `is_public`, when given, exempts a request from the check entirely -- `create_app` uses it
+    for the static SPA shell and the one login route. The MCP server passes none: every one of
+    its requests needs a valid bearer header or session cookie, with no public surface at all.
+    """
+
     async def _require_auth(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        path = request.url.path
-        if path == "/health" or (dist_dir is not None and _public_file(dist_dir, path) is not None):
+        if is_public is not None and is_public(request):
             return await call_next(request)
-        if not is_authorized(request.headers.get("authorization"), token):
+        if not _is_authorized_request(request, token, database_path):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
 
     return _require_auth
+
+
+class SessionIn(BaseModel):
+    token: str
+
+
+def _session_router(get_conn: GetConn, settings: Settings, token: str) -> APIRouter:
+    """The dashboard's own login: exchange `API_TOKEN` for an HttpOnly session cookie, check that
+    a session is still live, and revoke it. See `auth_middleware` for why `POST /api/session` is
+    the one route under `/api` that needs no credential of its own.
+    """
+    router = APIRouter()
+
+    @router.post("/session")
+    async def post_session(
+        body: SessionIn,
+        request: Request,
+        response: Response,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, str]:
+        if not secrets.compare_digest(body.token, token):
+            raise HTTPException(status_code=401, detail="invalid token")
+        session_token = secrets.token_urlsafe(32)
+        create_session(
+            conn,
+            _hash_session_token(session_token),
+            _session_expiry(settings.session_max_age_days),
+        )
+        response.set_cookie(
+            key=_SESSION_COOKIE_NAME,
+            value=session_token,
+            max_age=settings.session_max_age_days * 86400,
+            path="/",
+            httponly=True,
+            # The SPA is same-origin with this API, so Strict costs it nothing, and Strict is
+            # the CSRF mitigation for the DELETE/PATCH routes below -- do not weaken this to Lax.
+            samesite="strict",
+            # Secure only when this request itself arrived over https: an unconditional Secure
+            # would mean the cookie is never stored at all on http://127.0.0.1, which is how
+            # this app is actually deployed.
+            secure=request.url.scheme == "https",
+        )
+        return {"status": "ok"}
+
+    @router.get("/session")
+    async def get_session_route() -> dict[str, str]:
+        # Reaching this handler at all means auth_middleware already accepted this request's
+        # cookie or bearer header; there is nothing further to check.
+        return {"status": "ok"}
+
+    @router.delete("/session")
+    async def delete_session_route(
+        request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> dict[str, str]:
+        session_token = request.cookies.get(_SESSION_COOKIE_NAME)
+        if session_token is not None:
+            delete_session(conn, _hash_session_token(session_token))
+        response.delete_cookie(_SESSION_COOKIE_NAME, path="/")
+        return {"status": "ok"}
+
+    return router
 
 
 def _health_router() -> APIRouter:
@@ -742,18 +865,40 @@ def _ingest_router(get_conn: GetConn, fetcher: Fetcher) -> APIRouter:
 # src/frontend layout, which the Dockerfile does.
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
+_API_PREFIX = "/api"
+_SESSION_LOGIN_PATH = "/api/session"
+# The liveness probe stays unauthenticated. It answers `{"status": "ok"}` and reads nothing, so it
+# discloses only that the process is up -- which anyone who can reach the port already knows. A
+# container healthcheck or an uptime monitor cannot carry a credential, and the alternative is
+# probing `/`, which the SPA fallback answers with 200 and the shell even when the API is broken.
+_HEALTH_PATH = "/api/health"
+
+
+def _is_public_path(request: Request) -> bool:
+    """The dashboard API's public surface: the liveness probe, the one login route, and everything
+    outside `/api` (the static shell, served by `_spa_router`/`_public_file`). Every other `/api`
+    route is protected by default, so a route added later there stays behind the token without
+    needing to be named here.
+    """
+    if request.url.path == _HEALTH_PATH and request.method == "GET":
+        return True
+    if request.url.path == _SESSION_LOGIN_PATH and request.method == "POST":
+        return True
+    return not request.url.path.startswith(f"{_API_PREFIX}/")
+
 
 def _spa_router(dist_dir: Path) -> APIRouter:
-    """Serve the built dashboard: `/` gives the shell, and every asset `vite build` emits is
-    served from its own path.
+    """Serve the built dashboard: `/` gives the shell, every asset `vite build` emits is served
+    from its own path, and any other path falls back to the shell too.
 
-    Included last, after every API router, so an exact API path always matches its own route
-    first. This only ever receives what nothing above it claimed.
+    Included last, after every API router, so an exact `/api/...` path always matches its own
+    route first. This only ever receives what nothing above it claimed.
 
-    There is no `index.html` fallback for unknown paths because the dashboard has no client-side
-    router: it is one page driven by internal state, so it owns no URLs beyond `/`. A fallback
-    would answer every typo and every probe with 200 and force the auth middleware to guess which
-    unmatched paths were meant for the SPA.
+    The fallback exists because the dashboard now owns real URLs via its own client-side router
+    (`/documents/42`, `/sets/reading`, ...): a fresh tab's first request for one of those paths
+    has no server-side route to match, so it needs the same `index.html` shell `/` gets, and lets
+    the client router take it from there. `_public_file` still refuses a `..` escape outright
+    rather than folding it into this fallback.
     """
     router = APIRouter()
 
@@ -805,15 +950,23 @@ def create_app(
     candidate_dist = frontend_dist if frontend_dist is not None else _FRONTEND_DIST
     dist_dir = candidate_dist.resolve() if candidate_dist.is_dir() else None
 
-    app = FastAPI(title="Links Garden API")
-    app.middleware("http")(auth_middleware(token, dist_dir))
-    app.include_router(_health_router())
-    app.include_router(_search_router(get_conn, settings, resolved_embedder))
-    app.include_router(_document_router(get_conn))
-    app.include_router(_set_router(get_conn))
-    app.include_router(_set_admin_router(get_conn))
-    app.include_router(_review_router(get_conn))
-    app.include_router(_ingest_router(get_conn, resolved_fetcher))
+    app = FastAPI(
+        title="Links Garden API",
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        openapi_url="/api/openapi.json",
+    )
+    app.middleware("http")(
+        auth_middleware(token, settings.database_path, is_public=_is_public_path)
+    )
+    app.include_router(_health_router(), prefix=_API_PREFIX)
+    app.include_router(_session_router(get_conn, settings, token), prefix=_API_PREFIX)
+    app.include_router(_search_router(get_conn, settings, resolved_embedder), prefix=_API_PREFIX)
+    app.include_router(_document_router(get_conn), prefix=_API_PREFIX)
+    app.include_router(_set_router(get_conn), prefix=_API_PREFIX)
+    app.include_router(_set_admin_router(get_conn), prefix=_API_PREFIX)
+    app.include_router(_review_router(get_conn), prefix=_API_PREFIX)
+    app.include_router(_ingest_router(get_conn, resolved_fetcher), prefix=_API_PREFIX)
 
     if dist_dir is not None:
         app.include_router(_spa_router(dist_dir))

@@ -19,7 +19,7 @@ const hit: Hit = {
 describe('SearchPage', () => {
   it('renders results for a query', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} initialQuery="" onQueryChange={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -31,7 +31,7 @@ describe('SearchPage', () => {
 
   it('shows the empty state for no results', async () => {
     const search = vi.fn().mockResolvedValue([])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} initialQuery="" onQueryChange={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'nothing here')
 
@@ -42,7 +42,7 @@ describe('SearchPage', () => {
 
   it('wraps unbreakable snippet text instead of overflowing the card', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} initialQuery="" onQueryChange={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -53,7 +53,7 @@ describe('SearchPage', () => {
   it('warns when the top result is no better than a single-sided rank-1 match', async () => {
     const weakHit: Hit = { ...hit, score: 1 / 61, vector_rank: null }
     const search = vi.fn().mockResolvedValue([weakHit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} initialQuery="" onQueryChange={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'zzzqqq')
 
@@ -66,7 +66,7 @@ describe('SearchPage', () => {
 
   it('does not warn when the top result matched both search sides at rank 1', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} initialQuery="" onQueryChange={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -80,13 +80,21 @@ describe('SearchPage', () => {
     const noUrlHit: Hit = { ...hit, document_id: 2, url: null }
     const search = vi.fn().mockResolvedValue([hit, noUrlHit])
     const onOpenDocument = vi.fn()
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={onOpenDocument} />)
+    render(
+      <SearchPage
+        client={makeClient({ search })}
+        onUnauthorized={vi.fn()}
+        onOpenDocument={onOpenDocument}
+        initialQuery=""
+        onQueryChange={vi.fn()}
+      />,
+    )
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
     const titles = await screen.findAllByText('Tiktok slideshow ideas')
     expect(titles).toHaveLength(2)
-    // Neither entry links out directly, url or not: both are buttons into the document view.
-    for (const title of titles) expect(title.tagName).toBe('BUTTON')
+    // Neither entry links out directly, url or not: both are anchors into the document view.
+    for (const title of titles) expect(title.tagName).toBe('A')
 
     await userEvent.click(titles[0])
     expect(onOpenDocument).toHaveBeenCalledWith(1)

@@ -27,7 +27,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
 
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_is_idempotent_across_a_reopened_connection(tmp_path: Path) -> None:
@@ -39,17 +39,17 @@ def test_initialize_is_idempotent_across_a_reopened_connection(tmp_path: Path) -
     conn = connect(db_path)
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_does_not_clobber_a_later_migration_version(tmp_path: Path) -> None:
     conn = _open(tmp_path)
-    conn.execute("PRAGMA user_version=4")
+    conn.execute("PRAGMA user_version=5")
     conn.commit()
 
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_fresh_database_ends_at_current_version_with_every_column_present(
@@ -59,7 +59,7 @@ def test_fresh_database_ends_at_current_version_with_every_column_present(
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     assert {"extra_json", "frontmatter_json", "chunks_hash", "enriched_hash"}.issubset(columns)
 
 
@@ -109,7 +109,7 @@ def test_initialize_migrates_a_version_1_database_to_the_current_schema(tmp_path
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
     assert {"extra_json", "frontmatter_json", "chunks_hash", "enriched_hash"}.issubset(columns)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_migrates_a_version_0_database_whose_table_already_exists(
@@ -127,7 +127,7 @@ def test_initialize_migrates_a_version_0_database_whose_table_already_exists(
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
     assert {"extra_json", "frontmatter_json", "chunks_hash", "enriched_hash"}.issubset(columns)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_twice_on_a_migrated_database_changes_nothing_and_does_not_raise(
@@ -140,7 +140,7 @@ def test_initialize_twice_on_a_migrated_database_changes_nothing_and_does_not_ra
 
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_migrates_a_partially_upgraded_version_1_database(tmp_path: Path) -> None:
@@ -157,7 +157,7 @@ def test_initialize_migrates_a_partially_upgraded_version_1_database(tmp_path: P
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
     assert {"extra_json", "frontmatter_json", "chunks_hash", "enriched_hash"}.issubset(columns)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_initialize_on_a_version_1_database_with_every_column_already_present(
@@ -172,7 +172,7 @@ def test_initialize_on_a_version_1_database_with_every_column_already_present(
     conn = connect(db_path)
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_reinitializing_a_migrated_database_does_not_reapply_the_alters(
@@ -189,7 +189,7 @@ def test_reinitializing_a_migrated_database_does_not_reapply_the_alters(
     conn = connect(db_path)
     initialize(conn)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_connect_creates_missing_parent_directory(tmp_path: Path) -> None:

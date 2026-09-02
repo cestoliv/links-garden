@@ -5,6 +5,7 @@ import type { SetDefinition, SetRecord } from '../api/types'
 import { Button } from '../components/Button'
 import { DeleteRowButton } from '../components/DeleteRowButton'
 import { DocumentLink } from '../components/DocumentLink'
+import { Link } from '../components/Link'
 import { StatusBadge } from '../components/StatusBadge'
 import type { SchemaColumn } from '../utils/schema'
 import { formatCellValue, schemaColumns } from '../utils/schema'
@@ -12,22 +13,25 @@ import { formatCellValue, schemaColumns } from '../utils/schema'
 interface SetsPageProps {
   client: ApiClient
   onUnauthorized: () => void
+  /** The tab from the URL (`/sets/:name`), or null for the bare `/sets` default. */
+  activeSet: string | null
+  onSelectSet: (name: string) => void
 }
 
 type SetsState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'empty' }
-  | { status: 'ready'; sets: SetDefinition[]; active: string }
+  | { status: 'ready'; sets: SetDefinition[] }
 
-export function SetsPage({ client, onUnauthorized }: SetsPageProps) {
+export function SetsPage({ client, onUnauthorized, activeSet, onSelectSet }: SetsPageProps) {
   const [state, setState] = useState<SetsState>({ status: 'loading' })
 
   useEffect(() => {
     client
       .listSets()
       .then((sets) => {
-        setState(sets.length === 0 ? { status: 'empty' } : { status: 'ready', sets, active: sets[0].name })
+        setState(sets.length === 0 ? { status: 'empty' } : { status: 'ready', sets })
       })
       .catch((error: unknown) => {
         if (isUnauthorized(error)) {
@@ -55,15 +59,11 @@ export function SetsPage({ client, onUnauthorized }: SetsPageProps) {
       )}
       {state.status === 'ready' && (
         <>
-          <SetsTabs
-            sets={state.sets}
-            active={state.active}
-            onSelect={(name) => { setState({ status: 'ready', sets: state.sets, active: name }) }}
-          />
+          <SetsTabs sets={state.sets} active={activeSet ?? state.sets[0].name} onSelect={onSelectSet} />
           <SetTable
-            key={state.active}
+            key={activeSet ?? state.sets[0].name}
             client={client}
-            set={state.sets.find((set) => set.name === state.active) ?? state.sets[0]}
+            set={state.sets.find((set) => set.name === activeSet) ?? state.sets[0]}
             onUnauthorized={onUnauthorized}
           />
         </>
@@ -84,10 +84,10 @@ function SetsTabs({
   return (
     <div className="mt-6 flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
       {sets.map((set) => (
-        <button
+        <Link
           key={set.name}
-          type="button"
-          onClick={() => { onSelect(set.name) }}
+          href={`/sets/${encodeURIComponent(set.name)}`}
+          onNavigate={() => { onSelect(set.name) }}
           aria-current={set.name === active ? 'page' : undefined}
           className={`-mb-px rounded-t-md border-b-2 px-3 py-2 text-sm transition-colors duration-150 ${
             set.name === active
@@ -96,7 +96,7 @@ function SetsTabs({
           }`}
         >
           {set.name}
-        </button>
+        </Link>
       ))}
     </div>
   )
