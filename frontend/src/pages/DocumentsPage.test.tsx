@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/client'
 import type { DocumentListItem, DocumentListPage } from '../api/types'
@@ -71,7 +72,7 @@ describe('DocumentsPage', () => {
       next_cursor: null,
     } satisfies DocumentListPage)
 
-    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} />)
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} onOpenGraph={vi.fn()} />)
 
     expect(await screen.findByText('Doc A')).toBeInTheDocument()
     expect(listDocuments).toHaveBeenCalledWith({ limit: 50, cursor: undefined })
@@ -81,7 +82,7 @@ describe('DocumentsPage', () => {
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
     const listDocuments = vi.fn().mockResolvedValue({ items: [], next_cursor: null })
 
-    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} />)
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} onOpenGraph={vi.fn()} />)
 
     expect(await screen.findByText('No documents yet.')).toBeInTheDocument()
   })
@@ -91,7 +92,7 @@ describe('DocumentsPage', () => {
     const onUnauthorized = vi.fn()
     const listDocuments = vi.fn().mockRejectedValue(new ApiError(401, 'unauthorized'))
 
-    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={onUnauthorized} />)
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={onUnauthorized} onOpenGraph={vi.fn()} />)
 
     await waitFor(() => { expect(onUnauthorized).toHaveBeenCalledTimes(1); })
   })
@@ -102,7 +103,7 @@ describe('DocumentsPage', () => {
     const second = deferred<DocumentListPage>()
     const listDocuments = vi.fn().mockResolvedValueOnce(firstPage).mockReturnValueOnce(second.promise)
 
-    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} />)
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} onOpenGraph={vi.fn()} />)
     // Wait for the rendered page, not just the call count: the mock call fires synchronously
     // on mount, well before the promise resolves and the 'ready' state (and its observer) exist.
     await screen.findByText('Doc A')
@@ -127,7 +128,7 @@ describe('DocumentsPage', () => {
       .mockResolvedValueOnce({ items: [makeItem({ id: 1 })], next_cursor: 'cursor-1' })
       .mockResolvedValueOnce({ items: [makeItem({ id: 2 })], next_cursor: null })
 
-    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} />)
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} onOpenGraph={vi.fn()} />)
     await screen.findByText('Doc A')
     expect(MockIntersectionObserver.instances).toHaveLength(1)
     const observer = latestObserver()
@@ -143,5 +144,22 @@ describe('DocumentsPage', () => {
     observer.trigger(true)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(listDocuments).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens the graph rooted on a row, carrying its embedded status along', async () => {
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+    const listDocuments = vi.fn().mockResolvedValue({
+      items: [makeItem({ id: 7, title: 'Doc A', url: 'https://example.test/a', embedded: true })],
+      next_cursor: null,
+    })
+    const onOpenGraph = vi.fn()
+
+    render(<DocumentsPage client={makeClient({ listDocuments })} onUnauthorized={vi.fn()} onOpenGraph={onOpenGraph} />)
+    await screen.findByText('Doc A')
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Graph' }))
+
+    expect(onOpenGraph).toHaveBeenCalledWith({ id: 7, title: 'Doc A', url: 'https://example.test/a', embedded: true })
   })
 })

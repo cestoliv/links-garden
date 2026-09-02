@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
-import type { DocumentListItem } from '../api/types'
+import type { DocumentListItem, GraphAnchor } from '../api/types'
+import { Button } from '../components/Button'
 import { DocumentLink } from '../components/DocumentLink'
 import { StatusBadge } from '../components/StatusBadge'
 
 interface DocumentsPageProps {
   client: ApiClient
   onUnauthorized: () => void
+  onOpenGraph: (anchor: GraphAnchor) => void
 }
 
 // Matches the API's own default page size (src/links_garden/api.py's _DOCUMENTS_DEFAULT_LIMIT).
@@ -25,7 +27,7 @@ type DocumentsState =
       loadMoreError: string | null
     }
 
-export function DocumentsPage({ client, onUnauthorized }: DocumentsPageProps) {
+export function DocumentsPage({ client, onUnauthorized, onOpenGraph }: DocumentsPageProps) {
   const [state, setState] = useState<DocumentsState>({ status: 'loading' })
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   // Refs, not state: the fetch itself must see "a request is already running" and "there is no
@@ -95,7 +97,7 @@ export function DocumentsPage({ client, onUnauthorized }: DocumentsPageProps) {
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Every document in the garden, newest first, with its index status.
       </p>
-      <DocumentsList state={state} done={done} sentinelRef={sentinelRef} />
+      <DocumentsList state={state} done={done} sentinelRef={sentinelRef} onOpenGraph={onOpenGraph} />
     </div>
   )
 }
@@ -104,10 +106,12 @@ function DocumentsList({
   state,
   done,
   sentinelRef,
+  onOpenGraph,
 }: {
   state: DocumentsState
   done: boolean
   sentinelRef: RefObject<HTMLDivElement | null>
+  onOpenGraph: (anchor: GraphAnchor) => void
 }) {
   if (state.status === 'loading') {
     return <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading documents…</p>
@@ -126,7 +130,7 @@ function DocumentsList({
     <>
       <ul className="mt-6 flex flex-col gap-3">
         {state.items.map((item) => (
-          <DocumentRow key={item.id} item={item} />
+          <DocumentRow key={item.id} item={item} onOpenGraph={onOpenGraph} />
         ))}
       </ul>
       {!done && (
@@ -143,12 +147,30 @@ function DocumentsList({
   )
 }
 
-function DocumentRow({ item }: { item: DocumentListItem }) {
+function DocumentRow({
+  item,
+  onOpenGraph,
+}: {
+  item: DocumentListItem
+  onOpenGraph: (anchor: GraphAnchor) => void
+}) {
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="min-w-0">
-        <DocumentLink title={item.title} url={item.url} />
-        <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{item.source}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <DocumentLink title={item.title} url={item.url} />
+          <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{item.source}</p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="shrink-0"
+          onClick={() => {
+            onOpenGraph({ id: item.id, title: item.title, url: item.url, embedded: item.embedded })
+          }}
+        >
+          Graph
+        </Button>
       </div>
       {item.error !== null && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{item.error}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">

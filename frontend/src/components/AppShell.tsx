@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import type { ApiClient } from '../api/client'
-import { ComingSoon } from '../pages/ComingSoon'
+import type { GraphAnchor } from '../api/types'
 import { DocumentsPage } from '../pages/DocumentsPage'
+import { GraphPage } from '../pages/GraphPage'
 import { ReviewPage } from '../pages/ReviewPage'
 import { SearchPage } from '../pages/SearchPage'
 import { SetAdminPage } from '../pages/SetAdminPage'
 import { SetsPage } from '../pages/SetsPage'
 
 type PageId = 'search' | 'documents' | 'sets' | 'review' | 'admin' | 'graph'
-type StubPageId = Extract<PageId, 'graph'>
 
 const PAGES: { id: PageId; label: string }[] = [
   { id: 'search', label: 'Search' },
@@ -18,14 +18,6 @@ const PAGES: { id: PageId; label: string }[] = [
   { id: 'admin', label: 'Set admin' },
   { id: 'graph', label: 'Graph' },
 ]
-
-const STUB_COPY: Record<StubPageId, string> = {
-  graph: 'A document’s nearest neighbours, two hops out, lands last.',
-}
-
-function isStubPage(page: PageId): page is StubPageId {
-  return page === 'graph'
-}
 
 interface AppShellProps {
   client: ApiClient
@@ -37,6 +29,15 @@ interface AppShellProps {
 
 export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
   const [page, setPage] = useState<PageId>('search')
+  // Lives here, alongside the page id, so a control on another page (Documents) can root the
+  // graph on a document and switch to it in one click. No Context, no router: this is the whole
+  // amount of cross-page state the dashboard needs.
+  const [graphAnchor, setGraphAnchor] = useState<GraphAnchor | null>(null)
+
+  function openGraph(anchor: GraphAnchor) {
+    setGraphAnchor(anchor)
+    setPage('graph')
+  }
 
   return (
     <div className="min-h-dvh">
@@ -75,12 +76,14 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
       </header>
       <main>
         {page === 'search' && <SearchPage client={client} onUnauthorized={onUnauthorized} />}
-        {page === 'documents' && <DocumentsPage client={client} onUnauthorized={onUnauthorized} />}
+        {page === 'documents' && (
+          <DocumentsPage client={client} onUnauthorized={onUnauthorized} onOpenGraph={openGraph} />
+        )}
         {page === 'sets' && <SetsPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'review' && <ReviewPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'admin' && <SetAdminPage client={client} onUnauthorized={onUnauthorized} />}
-        {isStubPage(page) && (
-          <ComingSoon title={PAGES.find((item) => item.id === page)?.label ?? ''} description={STUB_COPY[page]} />
+        {page === 'graph' && (
+          <GraphPage client={client} anchor={graphAnchor} onAnchorChange={setGraphAnchor} onUnauthorized={onUnauthorized} />
         )}
       </main>
     </div>

@@ -89,6 +89,11 @@ export interface DocumentListPage {
   next_cursor: string | null
 }
 
+/** Enough of a `DocumentListItem` to root the graph on it: a title/url to render before any
+ * fetch, and `embedded` to tell "no embeddings yet" apart from "embedded, no neighbours" without
+ * a second round trip. */
+export type GraphAnchor = Pick<DocumentListItem, 'id' | 'title' | 'url' | 'embedded'>
+
 export type IngestSource = 'manual' | 'mcp'
 
 export interface IngestResult {
