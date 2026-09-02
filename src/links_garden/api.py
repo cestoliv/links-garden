@@ -17,6 +17,9 @@ Every route opens its own connection via `Depends(get_conn)` rather than sharing
 app's whole lifetime: uvicorn (and `TestClient`) can run request handling on a thread other than
 the one that called `create_app`, and a single shared connection would also let two requests'
 transactions interleave. WAL mode makes a fresh connection per request cheap.
+
+The built dashboard is served from this same app (see `_spa_router`) rather than from a second
+origin, which is what removes the need for CORS headers here at all.
 """
 
 import dataclasses
@@ -24,10 +27,11 @@ import json
 import secrets
 import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from links_garden.config import Settings
@@ -362,13 +366,38 @@ def is_authorized(header: str | None, token: str) -> bool:
     return secrets.compare_digest(credential, token)
 
 
+def _public_file(dist_dir: Path, path: str) -> Path | None:
+    """Return the built dashboard file `path` maps to, or None when it maps to no such file.
+
+    This is the single definition of the app's unauthenticated surface. The middleware exempts
+    exactly what this serves and `_spa_router` serves exactly what this returns, so the two can
+    never drift apart. Anything it does not name stays behind the token, which keeps a route
+    added later protected by default.
+
+    The shell and its assets have to load before the user has entered a token, because a browser
+    attaches no bearer header to its first navigation. They carry no garden data: `index.html` is
+    an empty mount point and the JS bundle is the same code any visitor can read from the public
+    repository. The data behind them still needs the token.
+
+    `path` is untrusted request input, so the candidate is resolved and confirmed to sit under
+    `dist_dir`, which closes off a `..` escape into the rest of the filesystem.
+    """
+    if path == "/":
+        return dist_dir / "index.html"
+    candidate = (dist_dir / path.lstrip("/")).resolve()
+    if candidate.is_relative_to(dist_dir) and candidate.is_file():
+        return candidate
+    return None
+
+
 def auth_middleware(
-    token: str,
+    token: str, dist_dir: Path | None = None
 ) -> Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]]:
     async def _require_auth(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if request.url.path == "/health":
+        path = request.url.path
+        if path == "/health" or (dist_dir is not None and _public_file(dist_dir, path) is not None):
             return await call_next(request)
         if not is_authorized(request.headers.get("authorization"), token):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
@@ -547,11 +576,43 @@ def _ingest_router(get_conn: GetConn, fetcher: Fetcher) -> APIRouter:
     return router
 
 
+# frontend/dist relative to the repo root, computed from this file's own location rather than
+# the process cwd, so `garden serve` finds it the same way whether run from a checkout or from
+# wherever the Docker image's WORKDIR happens to be -- as long as that image mirrors this same
+# src/frontend layout, which the Dockerfile does.
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+def _spa_router(dist_dir: Path) -> APIRouter:
+    """Serve the built dashboard: `/` gives the shell, and every asset `vite build` emits is
+    served from its own path.
+
+    Included last, after every API router, so an exact API path always matches its own route
+    first. This only ever receives what nothing above it claimed.
+
+    There is no `index.html` fallback for unknown paths because the dashboard has no client-side
+    router: it is one page driven by internal state, so it owns no URLs beyond `/`. A fallback
+    would answer every typo and every probe with 200 and force the auth middleware to guess which
+    unmatched paths were meant for the SPA.
+    """
+    router = APIRouter()
+
+    @router.get("/{full_path:path}")
+    async def serve_dashboard(full_path: str) -> FileResponse:
+        target = _public_file(dist_dir, f"/{full_path}")
+        if target is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(target)
+
+    return router
+
+
 def create_app(
     settings: Settings,
     *,
     fetcher: Fetcher | None = None,
     embedder: EmbedderLike | None = None,
+    frontend_dist: Path | None = None,
 ) -> FastAPI:
     """Build the API. Refuses to start with an empty `API_TOKEN`: an empty configured token
     matching an empty header would serve the whole garden to anything that can reach the port.
@@ -578,8 +639,14 @@ def create_app(
     resolved_fetcher: Fetcher = fetcher if fetcher is not None else Fetcher(settings)
     resolved_embedder: EmbedderLike = embedder if embedder is not None else Embedder(settings)
 
+    # Resolved before the middleware is built: the middleware exempts exactly the files the SPA
+    # router serves, so both need the same resolved directory, and `is_relative_to` below only
+    # means anything against a resolved base.
+    candidate_dist = frontend_dist if frontend_dist is not None else _FRONTEND_DIST
+    dist_dir = candidate_dist.resolve() if candidate_dist.is_dir() else None
+
     app = FastAPI(title="Links Garden API")
-    app.middleware("http")(auth_middleware(token))
+    app.middleware("http")(auth_middleware(token, dist_dir))
     app.include_router(_health_router())
     app.include_router(_search_router(get_conn, settings, resolved_embedder))
     app.include_router(_document_router(get_conn))
@@ -587,4 +654,7 @@ def create_app(
     app.include_router(_set_admin_router(get_conn))
     app.include_router(_review_router(get_conn))
     app.include_router(_ingest_router(get_conn, resolved_fetcher))
+
+    if dist_dir is not None:
+        app.include_router(_spa_router(dist_dir))
     return app
