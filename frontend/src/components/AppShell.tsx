@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import type { ApiClient } from '../api/client'
 import { ComingSoon } from '../pages/ComingSoon'
+import { DocumentsPage } from '../pages/DocumentsPage'
 import { ReviewPage } from '../pages/ReviewPage'
 import { SearchPage } from '../pages/SearchPage'
 import { SetAdminPage } from '../pages/SetAdminPage'
 import { SetsPage } from '../pages/SetsPage'
 
-type PageId = 'search' | 'sets' | 'review' | 'admin' | 'graph'
+type PageId = 'search' | 'documents' | 'sets' | 'review' | 'admin' | 'graph'
 type StubPageId = Extract<PageId, 'graph'>
 
 const PAGES: { id: PageId; label: string }[] = [
   { id: 'search', label: 'Search' },
+  { id: 'documents', label: 'Documents' },
   { id: 'sets', label: 'Sets' },
   { id: 'review', label: 'Review' },
   { id: 'admin', label: 'Set admin' },
@@ -73,6 +75,7 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
       </header>
       <main>
         {page === 'search' && <SearchPage client={client} onUnauthorized={onUnauthorized} />}
+        {page === 'documents' && <DocumentsPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'sets' && <SetsPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'review' && <ReviewPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'admin' && <SetAdminPage client={client} onUnauthorized={onUnauthorized} />}

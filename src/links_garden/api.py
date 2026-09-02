@@ -22,6 +22,7 @@ The built dashboard is served from this same app (see `_spa_router`) rather than
 origin, which is what removes the need for CORS headers here at all.
 """
 
+import base64
 import dataclasses
 import json
 import secrets
@@ -62,6 +63,11 @@ _DOCUMENT_COLUMNS = (
 # generator would be used from a different thread than the one that created it.
 GetConn = Callable[[], AsyncIterator[sqlite3.Connection]]
 
+# /documents: page size for the dashboard's infinite scroll. The ceiling is rejected rather than
+# silently clamped, matching every other bad-input check in this file.
+_DOCUMENTS_DEFAULT_LIMIT = 50
+_DOCUMENTS_MAX_LIMIT = 200
+
 
 class HitOut(BaseModel):
     document_id: int
@@ -91,6 +97,32 @@ class DocumentOut(BaseModel):
     fetched_at: str | None
     created_at: str
     updated_at: str
+
+
+class DocumentListItemOut(BaseModel):
+    """One row of `GET /documents`: the identifying fields plus the three derived index-status
+    flags the page exists to show. No `content`: the list is a scan of the whole corpus, not a
+    reader, and every document's full text would make the page heavy for no reason."""
+
+    id: int
+    source: str
+    source_ref: str
+    url: str | None
+    title: str | None
+    author: str | None
+    status: str
+    error: str | None
+    fetched_at: str | None
+    created_at: str
+    updated_at: str
+    embedded: bool
+    enriched: bool
+    set_names: list[str]
+
+
+class DocumentListOut(BaseModel):
+    items: list[DocumentListItemOut]
+    next_cursor: str | None
 
 
 class SetOut(BaseModel):
@@ -243,6 +275,92 @@ def document_exists(conn: sqlite3.Connection, document_id: int) -> bool:
         "SELECT 1 FROM documents WHERE id = ? AND deleted_at IS NULL", (document_id,)
     ).fetchone()
     return row is not None
+
+
+# \x1f (unit separator): GROUP_CONCAT's default ',' could appear inside a user-chosen set name.
+_SET_NAMES_SEP = "\x1f"
+
+
+def _encode_documents_cursor(created_at: str, document_id: int) -> str:
+    """Opaque on purpose: the client stores and replays this, never builds one itself."""
+    raw = f"{created_at}|{document_id}".encode()
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_documents_cursor(cursor: str) -> tuple[str, int]:
+    """Raises `ValueError` for anything that isn't a cursor this endpoint produced itself.
+    `base64` and `bytes.decode` already raise `ValueError` subclasses on bad input, so only the
+    shape check below needs an explicit raise."""
+    raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+    created_at, separator, id_part = raw.rpartition("|")
+    if separator == "" or not id_part.isdigit():
+        raise ValueError("malformed cursor")
+    return created_at, int(id_part)
+
+
+def _row_to_document_list_item(row: sqlite3.Row) -> DocumentListItemOut:
+    set_names = row["set_names"]
+    return DocumentListItemOut(
+        id=row["id"],
+        source=row["source"],
+        source_ref=row["source_ref"],
+        url=row["url"],
+        title=row["title"],
+        author=row["author"],
+        status=row["status"],
+        error=row["error"],
+        fetched_at=_iso_opt(row["fetched_at"]),
+        created_at=_iso(row["created_at"]),
+        updated_at=_iso(row["updated_at"]),
+        embedded=bool(row["embedded"]),
+        enriched=bool(row["enriched"]),
+        set_names=set_names.split(_SET_NAMES_SEP) if set_names else [],
+    )
+
+
+def list_documents(
+    conn: sqlite3.Connection, *, limit: int = _DOCUMENTS_DEFAULT_LIMIT, cursor: str | None = None
+) -> DocumentListOut:
+    """Every live document, newest first, keyset-paginated.
+
+    Deliberately not `SELECTOR_SQL`: that also requires `content IS NOT NULL AND status = 'ok'`,
+    which would hide exactly the failed and pending documents this page exists to surface. Only
+    `deleted_at IS NULL` is applied, matching every other "exclude tombstones" check in this file.
+
+    `created_at DESC, id DESC` with `(created_at, id) < (cursor_created_at, cursor_id)` as the
+    page boundary: `created_at` alone has one-second resolution, so a sync that writes several
+    rows inside one second needs `id` as a tiebreak or rows can shuffle between pages. Ordering
+    by `OFFSET` instead would skip or duplicate rows whenever a sync adds documents mid-scroll,
+    which for this page is the normal case, not an edge case.
+    """
+    where = "d.deleted_at IS NULL"
+    params: list[object] = []
+    if cursor is not None:
+        cursor_created_at, cursor_id = _decode_documents_cursor(cursor)
+        where += " AND (d.created_at, d.id) < (?, ?)"
+        params.extend([cursor_created_at, cursor_id])
+    # Fetch one extra row to know whether a next page exists, without a second COUNT query.
+    rows = conn.execute(
+        "SELECT d.id, d.source, d.source_ref, d.url, d.title, d.author, d.status, d.error, "
+        "d.fetched_at, d.created_at, d.updated_at, "
+        "EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id AND c.embedding IS NOT NULL) "
+        "AS embedded, "
+        "d.enriched_hash IS NOT NULL AS enriched, "
+        "(SELECT GROUP_CONCAT(s.name, ?) FROM set_memberships sm "
+        "JOIN sets s ON s.id = sm.set_id WHERE sm.document_id = d.id) AS set_names "
+        f"FROM documents d WHERE {where} "
+        "ORDER BY d.created_at DESC, d.id DESC LIMIT ?",
+        [_SET_NAMES_SEP, *params, limit + 1],
+    ).fetchall()
+    page = rows[:limit]
+    next_cursor = (
+        _encode_documents_cursor(page[-1]["created_at"], page[-1]["id"])
+        if len(rows) > limit
+        else None
+    )
+    return DocumentListOut(
+        items=[_row_to_document_list_item(row) for row in page], next_cursor=next_cursor
+    )
 
 
 def list_set_records(
@@ -431,6 +549,24 @@ def _search_router(get_conn: GetConn, settings: Settings, embedder: EmbedderLike
 
 def _document_router(get_conn: GetConn) -> APIRouter:
     router = APIRouter()
+
+    # Declared before the `{document_id}` routes below: a literal `/documents` can't collide
+    # with them since they all require a further path segment, but ordering it first keeps that
+    # true by construction rather than by relying on Starlette's matching order.
+    @router.get("/documents")
+    async def list_documents_route(
+        limit: int = _DOCUMENTS_DEFAULT_LIMIT,
+        cursor: str | None = None,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> DocumentListOut:
+        if limit < 1 or limit > _DOCUMENTS_MAX_LIMIT:
+            raise HTTPException(
+                status_code=400, detail=f"limit must be between 1 and {_DOCUMENTS_MAX_LIMIT}"
+            )
+        try:
+            return list_documents(conn, limit=limit, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid cursor") from exc
 
     @router.get("/documents/{document_id}")
     async def get_one_document(

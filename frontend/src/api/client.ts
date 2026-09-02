@@ -1,5 +1,6 @@
 import type {
   Document,
+  DocumentListPage,
   Hit,
   IngestResult,
   IngestSource,
@@ -50,6 +51,7 @@ export interface ApiClient {
   getDocument: (id: number) => Promise<Document>
   getRelated: (id: number, limit?: number) => Promise<Hit[]>
   deleteDocument: (id: number) => Promise<void>
+  listDocuments: (options?: { limit?: number; cursor?: string }) => Promise<DocumentListPage>
   listSets: () => Promise<SetDefinition[]>
   getSet: (name: string) => Promise<SetDefinition>
   createSet: (name: string, description: string, schema: JsonSchema) => Promise<SetDefinition>
@@ -104,6 +106,7 @@ export function createApiClient(baseUrl: string, token: string): ApiClient {
     getDocument: (id) => request(`/documents/${String(id)}`),
     getRelated: (id, limit) => request(`/documents/${String(id)}/related${query({ limit })}`),
     deleteDocument: (id) => request(`/documents/${String(id)}`, { method: 'DELETE' }),
+    listDocuments: (options = {}) => request(`/documents${query(options)}`),
     listSets: () => request('/sets'),
     getSet: (name) => request(`/sets/${encodeURIComponent(name)}`),
     createSet: (name, description, schema) =>

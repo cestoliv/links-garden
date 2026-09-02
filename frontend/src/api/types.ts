@@ -67,6 +67,28 @@ export interface ReviewItem {
   error: string | null
 }
 
+export interface DocumentListItem {
+  id: number
+  source: string
+  source_ref: string
+  url: string | null
+  title: string | null
+  author: string | null
+  status: string
+  error: string | null
+  fetched_at: string | null
+  created_at: string
+  updated_at: string
+  embedded: boolean
+  enriched: boolean
+  set_names: string[]
+}
+
+export interface DocumentListPage {
+  items: DocumentListItem[]
+  next_cursor: string | null
+}
+
 export type IngestSource = 'manual' | 'mcp'
 
 export interface IngestResult {

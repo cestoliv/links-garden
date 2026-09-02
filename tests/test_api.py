@@ -36,6 +36,7 @@ _SCHEMA: dict[str, object] = {
 # the brief calls those out by name as a route a `Depends` could accidentally miss.
 _PROTECTED_REQUESTS: list[tuple[str, str, dict[str, Any]]] = [
     ("GET", "/search", {"params": {"q": "x"}}),
+    ("GET", "/documents", {}),
     ("GET", "/documents/1", {}),
     ("GET", "/documents/1/related", {}),
     ("DELETE", "/documents/1", {}),
@@ -137,6 +138,13 @@ def _insert_document(
     conn.commit()
     assert cursor.lastrowid is not None
     return cursor.lastrowid
+
+
+def _set_created_at(conn: sqlite3.Connection, document_id: int, created_at: str) -> None:
+    """Force a document's `created_at` so pagination-order tests don't depend on wall-clock
+    timing (several inserts inside one test can otherwise land in the same SQLite second)."""
+    conn.execute("UPDATE documents SET created_at = ? WHERE id = ?", (created_at, document_id))
+    conn.commit()
 
 
 def _insert_membership(
@@ -587,6 +595,117 @@ def test_related_documents_uses_stored_embeddings(tmp_path: Path) -> None:
     assert response.status_code == 200
     related_ids = [hit["document_id"] for hit in response.json()]
     assert related_ids == [neighbor_id]
+
+
+def test_list_documents_orders_newest_first_with_id_tiebreak(tmp_path: Path) -> None:
+    # A sync writes several rows inside the same second; created_at alone can't order them.
+    client, conn = _make_app(tmp_path)
+    a = _insert_document(conn, "a")
+    b = _insert_document(conn, "b")
+    c = _insert_document(conn, "c")
+    for document_id in (a, b, c):
+        _set_created_at(conn, document_id, "2026-01-01 09:48:43")
+
+    response = client.get("/documents", headers=_HEADERS)
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [c, b, a]
+
+
+def test_list_documents_pagination_survives_insert_between_page_fetches(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    doc1 = _insert_document(conn, "doc1")
+    doc2 = _insert_document(conn, "doc2")
+    doc3 = _insert_document(conn, "doc3")
+    _set_created_at(conn, doc1, "2026-01-01 09:48:43")
+    _set_created_at(conn, doc2, "2026-01-01 09:48:44")
+    _set_created_at(conn, doc3, "2026-01-01 09:48:45")
+
+    first_page = client.get("/documents", params={"limit": 2}, headers=_HEADERS).json()
+    assert [item["id"] for item in first_page["items"]] == [doc3, doc2]
+    cursor = first_page["next_cursor"]
+    assert cursor is not None
+
+    # A sync adds a new, newer-than-anything-seen-so-far document while the client is between
+    # page fetches. An OFFSET-based query would let this shift doc2 back into view a second
+    # time; keyset pagination must not.
+    doc4 = _insert_document(conn, "doc4")
+    _set_created_at(conn, doc4, "2026-01-01 09:48:46")
+
+    second_page = client.get("/documents", params={"cursor": cursor}, headers=_HEADERS).json()
+    assert [item["id"] for item in second_page["items"]] == [doc1]
+    assert second_page["next_cursor"] is None
+
+
+def test_list_documents_excludes_tombstoned_rows(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    alive_id = _insert_document(conn, "alive")
+    gone_id = _insert_document(conn, "gone", deleted=True)
+
+    response = client.get("/documents", headers=_HEADERS)
+
+    ids = [item["id"] for item in response.json()["items"]]
+    assert alive_id in ids
+    assert gone_id not in ids
+
+
+def test_list_documents_includes_failed_and_pending_documents(tmp_path: Path) -> None:
+    # SELECTOR_SQL (status = 'ok' AND content IS NOT NULL) would hide both of these; this list
+    # exists precisely to surface documents that never finished ingesting.
+    client, conn = _make_app(tmp_path)
+    failed_id = _insert_document(conn, "failed-doc", content=None, status="failed")
+    conn.execute("UPDATE documents SET error = 'boom' WHERE id = ?", (failed_id,))
+    conn.commit()
+    pending_id = _insert_document(conn, "pending-doc", content=None, status="pending")
+
+    response = client.get("/documents", headers=_HEADERS)
+
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[failed_id]["status"] == "failed"
+    assert items[failed_id]["error"] == "boom"
+    assert items[pending_id]["status"] == "pending"
+
+
+def test_list_documents_ceiling_is_rejected_not_clamped(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path)
+
+    response = client.get("/documents", params={"limit": 201}, headers=_HEADERS)
+
+    assert response.status_code == 400
+
+
+def test_list_documents_rejects_malformed_cursor(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path)
+
+    response = client.get("/documents", params={"cursor": "not-a-real-cursor!!"}, headers=_HEADERS)
+
+    assert response.status_code == 400
+
+
+def test_list_documents_computes_embedded_enriched_and_set_names(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    recipe = _create_recipe_set(conn)
+    assert recipe.id is not None
+    bare_id = _insert_document(conn, "bare")
+    indexed_id = _insert_document(conn, "indexed")
+    conn.execute(
+        "INSERT INTO chunks (document_id, ordinal, text, token_count, embedding) "
+        "VALUES (?, 0, 'chunk text', 2, ?)",
+        (indexed_id, pack_vector(np.array([1.0, 0.0], dtype=np.float32))),
+    )
+    conn.execute("UPDATE documents SET enriched_hash = 'abc123' WHERE id = ?", (indexed_id,))
+    conn.commit()
+    _insert_membership(conn, indexed_id, recipe.id, status="ok")
+
+    response = client.get("/documents", headers=_HEADERS)
+
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[bare_id]["embedded"] is False
+    assert items[bare_id]["enriched"] is False
+    assert items[bare_id]["set_names"] == []
+    assert items[indexed_id]["embedded"] is True
+    assert items[indexed_id]["enriched"] is True
+    assert items[indexed_id]["set_names"] == ["recipe"]
 
 
 def test_ingest_stores_document_under_caller_marker(tmp_path: Path) -> None:
