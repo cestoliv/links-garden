@@ -708,6 +708,32 @@ def test_list_documents_computes_embedded_enriched_and_set_names(tmp_path: Path)
     assert items[indexed_id]["set_names"] == ["recipe"]
 
 
+def test_get_document_computes_embedded_enriched_and_set_names(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    recipe = _create_recipe_set(conn)
+    assert recipe.id is not None
+    bare_id = _insert_document(conn, "bare")
+    indexed_id = _insert_document(conn, "indexed")
+    conn.execute(
+        "INSERT INTO chunks (document_id, ordinal, text, token_count, embedding) "
+        "VALUES (?, 0, 'chunk text', 2, ?)",
+        (indexed_id, pack_vector(np.array([1.0, 0.0], dtype=np.float32))),
+    )
+    conn.execute("UPDATE documents SET enriched_hash = 'abc123' WHERE id = ?", (indexed_id,))
+    conn.commit()
+    _insert_membership(conn, indexed_id, recipe.id, status="ok")
+
+    bare = client.get(f"/documents/{bare_id}", headers=_HEADERS).json()
+    indexed = client.get(f"/documents/{indexed_id}", headers=_HEADERS).json()
+
+    assert bare["embedded"] is False
+    assert bare["enriched"] is False
+    assert bare["set_names"] == []
+    assert indexed["embedded"] is True
+    assert indexed["enriched"] is True
+    assert indexed["set_names"] == ["recipe"]
+
+
 def test_ingest_stores_document_under_caller_marker(tmp_path: Path) -> None:
     fetcher = _FakeFetcher(
         {

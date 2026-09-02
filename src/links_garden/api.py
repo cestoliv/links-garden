@@ -97,6 +97,9 @@ class DocumentOut(BaseModel):
     fetched_at: str | None
     created_at: str
     updated_at: str
+    embedded: bool
+    enriched: bool
+    set_names: list[str]
 
 
 class DocumentListItemOut(BaseModel):
@@ -226,6 +229,7 @@ def _update_set_status(message: str) -> int:
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentOut:
+    set_names = row["set_names"]
     return DocumentOut(
         id=row["id"],
         source=row["source"],
@@ -243,6 +247,9 @@ def _row_to_document(row: sqlite3.Row) -> DocumentOut:
         fetched_at=_iso_opt(row["fetched_at"]),
         created_at=_iso(row["created_at"]),
         updated_at=_iso(row["updated_at"]),
+        embedded=bool(row["embedded"]),
+        enriched=bool(row["enriched"]),
+        set_names=set_names.split(_SET_NAMES_SEP) if set_names else [],
     )
 
 
@@ -258,9 +265,17 @@ def _row_to_record(row: sqlite3.Row) -> SetRecordOut:
 
 
 def get_document(conn: sqlite3.Connection, document_id: int) -> DocumentOut | None:
+    # embedded/enriched/set_names computed the same way `list_documents` computes them below, so
+    # the document view can show index status and set membership with no second request.
     row = conn.execute(
-        f"SELECT {_DOCUMENT_COLUMNS} FROM documents d WHERE d.id = ? AND {SELECTOR_SQL}",
-        (document_id,),
+        f"SELECT {_DOCUMENT_COLUMNS}, "
+        "EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id AND c.embedding IS NOT NULL) "
+        "AS embedded, "
+        "d.enriched_hash IS NOT NULL AS enriched, "
+        "(SELECT GROUP_CONCAT(s.name, ?) FROM set_memberships sm "
+        "JOIN sets s ON s.id = sm.set_id WHERE sm.document_id = d.id) AS set_names "
+        f"FROM documents d WHERE d.id = ? AND {SELECTOR_SQL}",
+        (_SET_NAMES_SEP, document_id),
     ).fetchone()
     return _row_to_document(row) if row is not None else None
 

@@ -30,6 +30,9 @@ export interface Document {
   fetched_at: string | null
   created_at: string
   updated_at: string
+  embedded: boolean
+  enriched: boolean
+  set_names: string[]
 }
 
 // The set's own JSON Schema, kept loosely typed: task 2 reads `properties` off it to derive

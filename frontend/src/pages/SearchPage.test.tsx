@@ -19,7 +19,7 @@ const hit: Hit = {
 describe('SearchPage', () => {
   it('renders results for a query', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -31,7 +31,7 @@ describe('SearchPage', () => {
 
   it('shows the empty state for no results', async () => {
     const search = vi.fn().mockResolvedValue([])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'nothing here')
 
@@ -42,7 +42,7 @@ describe('SearchPage', () => {
 
   it('wraps unbreakable snippet text instead of overflowing the card', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -53,7 +53,7 @@ describe('SearchPage', () => {
   it('warns when the top result is no better than a single-sided rank-1 match', async () => {
     const weakHit: Hit = { ...hit, score: 1 / 61, vector_rank: null }
     const search = vi.fn().mockResolvedValue([weakHit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'zzzqqq')
 
@@ -66,7 +66,7 @@ describe('SearchPage', () => {
 
   it('does not warn when the top result matched both search sides at rank 1', async () => {
     const search = vi.fn().mockResolvedValue([hit])
-    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} />)
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={vi.fn()} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
 
@@ -76,41 +76,22 @@ describe('SearchPage', () => {
     expect(screen.queryByText(/No strong match for/)).not.toBeInTheDocument()
   })
 
-  it('expands a url-less result in place to show the document', async () => {
-    const noUrlHit: Hit = { ...hit, url: null }
-    const search = vi.fn().mockResolvedValue([noUrlHit])
-    const getDocument = vi.fn().mockResolvedValue({
-      id: 1,
-      source: 'obsidian',
-      source_ref: 'vault/tiktok.md',
-      url: null,
-      parent_document_id: null,
-      title: 'Tiktok slideshow ideas',
-      author: null,
-      content: 'Full note content goes here.',
-      summary: null,
-      keywords: null,
-      message_text: null,
-      status: 'ready',
-      error: null,
-      fetched_at: null,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-    })
-    render(
-      <SearchPage client={makeClient({ search, getDocument })} onUnauthorized={vi.fn()} />,
-    )
+  it('opens the document view on the result title, url or not', async () => {
+    const noUrlHit: Hit = { ...hit, document_id: 2, url: null }
+    const search = vi.fn().mockResolvedValue([hit, noUrlHit])
+    const onOpenDocument = vi.fn()
+    render(<SearchPage client={makeClient({ search })} onUnauthorized={vi.fn()} onOpenDocument={onOpenDocument} />)
 
     await userEvent.type(screen.getByLabelText('Search'), 'tiktok slideshow')
-    const title = await screen.findByText('Tiktok slideshow ideas')
+    const titles = await screen.findAllByText('Tiktok slideshow ideas')
+    expect(titles).toHaveLength(2)
+    // Neither entry links out directly, url or not: both are buttons into the document view.
+    for (const title of titles) expect(title.tagName).toBe('BUTTON')
 
-    // No URL, so the title is a plain button, not a link.
-    expect(title.tagName).toBe('BUTTON')
+    await userEvent.click(titles[0])
+    expect(onOpenDocument).toHaveBeenCalledWith(1)
 
-    await userEvent.click(title)
-
-    expect(getDocument).toHaveBeenCalledWith(1)
-    expect(await screen.findByText('Full note content goes here.')).toBeInTheDocument()
-    expect(screen.getByText('vault/tiktok.md')).toBeInTheDocument()
+    await userEvent.click(titles[1])
+    expect(onOpenDocument).toHaveBeenCalledWith(2)
   })
 })

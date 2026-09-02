@@ -4,13 +4,13 @@ import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { DocumentListItem, GraphAnchor } from '../api/types'
 import { Button } from '../components/Button'
-import { DocumentLink } from '../components/DocumentLink'
 import { StatusBadge } from '../components/StatusBadge'
 
 interface DocumentsPageProps {
   client: ApiClient
   onUnauthorized: () => void
   onOpenGraph: (anchor: GraphAnchor) => void
+  onOpenDocument: (id: number) => void
 }
 
 // Matches the API's own default page size (src/links_garden/api.py's _DOCUMENTS_DEFAULT_LIMIT).
@@ -27,7 +27,7 @@ type DocumentsState =
       loadMoreError: string | null
     }
 
-export function DocumentsPage({ client, onUnauthorized, onOpenGraph }: DocumentsPageProps) {
+export function DocumentsPage({ client, onUnauthorized, onOpenGraph, onOpenDocument }: DocumentsPageProps) {
   const [state, setState] = useState<DocumentsState>({ status: 'loading' })
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   // Refs, not state: the fetch itself must see "a request is already running" and "there is no
@@ -97,7 +97,13 @@ export function DocumentsPage({ client, onUnauthorized, onOpenGraph }: Documents
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Every document in the garden, newest first, with its index status.
       </p>
-      <DocumentsList state={state} done={done} sentinelRef={sentinelRef} onOpenGraph={onOpenGraph} />
+      <DocumentsList
+        state={state}
+        done={done}
+        sentinelRef={sentinelRef}
+        onOpenGraph={onOpenGraph}
+        onOpenDocument={onOpenDocument}
+      />
     </div>
   )
 }
@@ -107,11 +113,13 @@ function DocumentsList({
   done,
   sentinelRef,
   onOpenGraph,
+  onOpenDocument,
 }: {
   state: DocumentsState
   done: boolean
   sentinelRef: RefObject<HTMLDivElement | null>
   onOpenGraph: (anchor: GraphAnchor) => void
+  onOpenDocument: (id: number) => void
 }) {
   if (state.status === 'loading') {
     return <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading documents…</p>
@@ -130,7 +138,7 @@ function DocumentsList({
     <>
       <ul className="mt-6 flex flex-col gap-3">
         {state.items.map((item) => (
-          <DocumentRow key={item.id} item={item} onOpenGraph={onOpenGraph} />
+          <DocumentRow key={item.id} item={item} onOpenGraph={onOpenGraph} onOpenDocument={onOpenDocument} />
         ))}
       </ul>
       {!done && (
@@ -150,15 +158,25 @@ function DocumentsList({
 function DocumentRow({
   item,
   onOpenGraph,
+  onOpenDocument,
 }: {
   item: DocumentListItem
   onOpenGraph: (anchor: GraphAnchor) => void
+  onOpenDocument: (id: number) => void
 }) {
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <DocumentLink title={item.title} url={item.url} />
+          <button
+            type="button"
+            onClick={() => {
+              onOpenDocument(item.id)
+            }}
+            className="truncate text-left font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          >
+            {item.title ?? item.url ?? 'Untitled'}
+          </button>
           <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{item.source}</p>
         </div>
         <Button

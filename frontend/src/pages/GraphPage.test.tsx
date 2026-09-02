@@ -42,6 +42,7 @@ describe('GraphPage', () => {
         client={makeClient({ listDocuments: noDocuments() })}
         anchor={null}
         onAnchorChange={vi.fn()}
+        onOpenDocument={vi.fn()}
         onUnauthorized={vi.fn()}
       />,
     )
@@ -56,6 +57,7 @@ describe('GraphPage', () => {
         client={makeClient({ listDocuments: noDocuments(), getRelated })}
         anchor={{ id: 1, title: 'Doc A', url: null, embedded: false }}
         onAnchorChange={vi.fn()}
+        onOpenDocument={vi.fn()}
         onUnauthorized={vi.fn()}
       />,
     )
@@ -72,6 +74,7 @@ describe('GraphPage', () => {
         client={makeClient({ listDocuments: noDocuments(), getRelated })}
         anchor={anchorA}
         onAnchorChange={vi.fn()}
+        onOpenDocument={vi.fn()}
         onUnauthorized={vi.fn()}
       />,
     )
@@ -102,6 +105,7 @@ describe('GraphPage', () => {
         client={makeClient({ listDocuments: noDocuments(), getRelated })}
         anchor={anchorA}
         onAnchorChange={vi.fn()}
+        onOpenDocument={vi.fn()}
         onUnauthorized={vi.fn()}
       />,
     )
@@ -133,6 +137,7 @@ describe('GraphPage', () => {
         client={makeClient({ listDocuments: noDocuments(), getRelated })}
         anchor={anchorA}
         onAnchorChange={vi.fn()}
+        onOpenDocument={vi.fn()}
         onUnauthorized={vi.fn()}
       />,
     )
@@ -152,33 +157,99 @@ describe('GraphPage', () => {
 
   function Harness({ client, initialAnchor }: { client: ApiClient; initialAnchor: GraphAnchor }) {
     const [anchor, setAnchor] = useState<GraphAnchor | null>(initialAnchor)
-    return <GraphPage client={client} anchor={anchor} onAnchorChange={setAnchor} onUnauthorized={vi.fn()} />
+    return (
+      <GraphPage client={client} anchor={anchor} onAnchorChange={setAnchor} onOpenDocument={vi.fn()} onUnauthorized={vi.fn()} />
+    )
   }
 
-  it('re-roots on node click, and serves a previously-visited anchor from cache', async () => {
+  function withRecentDocuments(): ApiClient['listDocuments'] {
+    return vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          source: 'obsidian',
+          source_ref: 'vault/a.md',
+          url: 'https://example.test/a',
+          title: 'Doc A',
+          author: null,
+          status: 'ok',
+          error: null,
+          fetched_at: '2026-01-01T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          embedded: true,
+          enriched: false,
+          set_names: [],
+        },
+        {
+          id: 2,
+          source: 'obsidian',
+          source_ref: 'vault/b.md',
+          url: 'https://example.test/b',
+          title: 'Doc B',
+          author: null,
+          status: 'ok',
+          error: null,
+          fetched_at: '2026-01-01T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          embedded: true,
+          enriched: false,
+          set_names: [],
+        },
+      ],
+      next_cursor: null,
+    })
+  }
+
+  it('opens the document view on node click, without re-rooting the graph', async () => {
+    const hitB = makeHit({ document_id: 2, title: 'Doc B' })
+    const getRelated = vi.fn().mockResolvedValue([hitB])
+    const onAnchorChange = vi.fn()
+    const onOpenDocument = vi.fn()
+
+    render(
+      <GraphPage
+        client={makeClient({ listDocuments: noDocuments(), getRelated })}
+        anchor={anchorA}
+        onAnchorChange={onAnchorChange}
+        onOpenDocument={onOpenDocument}
+        onUnauthorized={vi.fn()}
+      />,
+    )
+
+    const nodeB = await screen.findByText('Doc B')
+    await userEvent.click(nodeB)
+
+    expect(onOpenDocument).toHaveBeenCalledWith(2)
+    expect(onAnchorChange).not.toHaveBeenCalled()
+  })
+
+  it('re-roots via the recent-documents picker, and serves a previously-visited anchor from cache', async () => {
     const hitB = makeHit({ document_id: 2, title: 'Doc B' })
     const hitA = makeHit({ document_id: 1, title: 'Doc A' })
     // A's neighbours are just B, and B's are just A: a two-node graph either way it's rooted.
     const getRelated = vi.fn((id: number) => Promise.resolve(id === 1 ? [hitB] : id === 2 ? [hitA] : []))
 
-    render(<Harness client={makeClient({ listDocuments: noDocuments(), getRelated })} initialAnchor={anchorA} />)
+    render(<Harness client={makeClient({ listDocuments: withRecentDocuments(), getRelated })} initialAnchor={anchorA} />)
 
-    const nodeB = await screen.findByText('Doc B')
+    // "Doc A"/"Doc B" each show up twice once rooted (the picker entry and the graph's own SVG
+    // node label), so the graph's own aria-label is the unambiguous way to assert which is rooted.
+    await screen.findByRole('img', { name: 'Graph rooted on Doc A' })
     expect(getRelated).toHaveBeenCalledTimes(2) // A's first hop, then B's second hop
 
-    await userEvent.click(nodeB)
+    await userEvent.click(screen.getByRole('button', { name: 'Doc B' }))
 
     // Rooted on B now, with A as its neighbour: two fresh calls for B's own two hops.
-    await screen.findByText('Doc A')
+    await screen.findByRole('img', { name: 'Graph rooted on Doc B' })
     await waitFor(() => {
       expect(getRelated).toHaveBeenCalledTimes(4)
     })
 
-    const nodeA = await screen.findByText('Doc A')
-    await userEvent.click(nodeA)
+    await userEvent.click(screen.getByRole('button', { name: 'Doc A' }))
 
     // Back on A, already computed once above — served from cache, no fifth call.
-    await screen.findByText('Doc B')
+    await screen.findByRole('img', { name: 'Graph rooted on Doc A' })
     expect(getRelated).toHaveBeenCalledTimes(4)
   })
 })
