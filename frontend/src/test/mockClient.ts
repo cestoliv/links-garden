@@ -9,6 +9,7 @@ export function makeClient(overrides: Partial<ApiClient>): ApiClient {
     getDocument: notImplemented,
     getRelated: notImplemented,
     deleteDocument: notImplemented,
+    listDocuments: notImplemented,
     listSets: notImplemented,
     getSet: notImplemented,
     createSet: notImplemented,
