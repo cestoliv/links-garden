@@ -97,6 +97,9 @@ class DocumentOut(BaseModel):
     fetched_at: str | None
     created_at: str
     updated_at: str
+    embedded: bool
+    enriched: bool
+    set_names: list[str]
 
 
 class DocumentListItemOut(BaseModel):
@@ -226,6 +229,7 @@ def _update_set_status(message: str) -> int:
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentOut:
+    set_names = row["set_names"]
     return DocumentOut(
         id=row["id"],
         source=row["source"],
@@ -243,6 +247,9 @@ def _row_to_document(row: sqlite3.Row) -> DocumentOut:
         fetched_at=_iso_opt(row["fetched_at"]),
         created_at=_iso(row["created_at"]),
         updated_at=_iso(row["updated_at"]),
+        embedded=bool(row["embedded"]),
+        enriched=bool(row["enriched"]),
+        set_names=set_names.split(_SET_NAMES_SEP) if set_names else [],
     )
 
 
@@ -258,9 +265,26 @@ def _row_to_record(row: sqlite3.Row) -> SetRecordOut:
 
 
 def get_document(conn: sqlite3.Connection, document_id: int) -> DocumentOut | None:
+    """One document by id, whatever state it is in.
+
+    Filters on `deleted_at IS NULL` alone, matching `list_documents` rather than `SELECTOR_SQL`.
+    Fetching a specific id by hand is not searching: `SELECTOR_SQL` also demands
+    `content IS NOT NULL AND status = 'ok'`, so a failed or still-pending document answered 404
+    "document not found" even while the Documents page listed it, which dead-ended the one page
+    built to surface exactly those rows. `status` and `error` come back in the response, so a
+    caller can still tell a failed document from a usable one.
+    """
+    # embedded/enriched/set_names computed the same way `list_documents` computes them below, so
+    # the document view can show index status and set membership with no second request.
     row = conn.execute(
-        f"SELECT {_DOCUMENT_COLUMNS} FROM documents d WHERE d.id = ? AND {SELECTOR_SQL}",
-        (document_id,),
+        f"SELECT {_DOCUMENT_COLUMNS}, "
+        "EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id AND c.embedding IS NOT NULL) "
+        "AS embedded, "
+        "d.enriched_hash IS NOT NULL AS enriched, "
+        "(SELECT GROUP_CONCAT(s.name, ?) FROM set_memberships sm "
+        "JOIN sets s ON s.id = sm.set_id WHERE sm.document_id = d.id) AS set_names "
+        "FROM documents d WHERE d.id = ? AND d.deleted_at IS NULL",
+        (_SET_NAMES_SEP, document_id),
     ).fetchone()
     return _row_to_document(row) if row is not None else None
 
@@ -268,8 +292,8 @@ def get_document(conn: sqlite3.Connection, document_id: int) -> DocumentOut | No
 def document_exists(conn: sqlite3.Connection, document_id: int) -> bool:
     """Whether a live row exists, regardless of `status` or `content`.
 
-    Deliberately looser than `get_document`'s full `SELECTOR_SQL`: a failed or still-pending
-    ingest is invisible to search and GET, but still a row a caller should be able to tombstone.
+    Kept separate from `get_document` because it builds no `DocumentOut`: the delete route only
+    needs to know a row is there before tombstoning it.
     """
     row = conn.execute(
         "SELECT 1 FROM documents WHERE id = ? AND deleted_at IS NULL", (document_id,)

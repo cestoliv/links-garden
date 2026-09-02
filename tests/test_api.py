@@ -354,18 +354,20 @@ def test_delete_tombstones_rather_than_removes(tmp_path: Path) -> None:
     assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 404
 
 
-def test_delete_reaches_a_failed_document_get_cannot_see(tmp_path: Path) -> None:
-    # A failed ingest fails SELECTOR_SQL (status != 'ok'), so GET 404s on it, but it's still a
-    # real row someone reviewing failed ingests should be able to clear out.
+def test_delete_reaches_a_failed_document(tmp_path: Path) -> None:
+    # A failed ingest is a real row someone reviewing failed ingests should be able to clear out.
+    # GET reaches it too now, so that a listed failure can be opened and read; deleting it is a
+    # separate property, and this test is about the delete.
     client, conn = _make_app(tmp_path)
     document_id = _insert_document(conn, "boom", content=None, status="failed")
-    assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 404
+    assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 200
 
     response = client.delete(f"/documents/{document_id}", headers=_HEADERS)
 
     assert response.status_code == 200
     row = conn.execute("SELECT deleted_at FROM documents WHERE id = ?", (document_id,)).fetchone()
     assert row is not None and row["deleted_at"] is not None
+    assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 404
 
 
 # 13. No response body or error contains the token.
@@ -708,6 +710,32 @@ def test_list_documents_computes_embedded_enriched_and_set_names(tmp_path: Path)
     assert items[indexed_id]["set_names"] == ["recipe"]
 
 
+def test_get_document_computes_embedded_enriched_and_set_names(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    recipe = _create_recipe_set(conn)
+    assert recipe.id is not None
+    bare_id = _insert_document(conn, "bare")
+    indexed_id = _insert_document(conn, "indexed")
+    conn.execute(
+        "INSERT INTO chunks (document_id, ordinal, text, token_count, embedding) "
+        "VALUES (?, 0, 'chunk text', 2, ?)",
+        (indexed_id, pack_vector(np.array([1.0, 0.0], dtype=np.float32))),
+    )
+    conn.execute("UPDATE documents SET enriched_hash = 'abc123' WHERE id = ?", (indexed_id,))
+    conn.commit()
+    _insert_membership(conn, indexed_id, recipe.id, status="ok")
+
+    bare = client.get(f"/documents/{bare_id}", headers=_HEADERS).json()
+    indexed = client.get(f"/documents/{indexed_id}", headers=_HEADERS).json()
+
+    assert bare["embedded"] is False
+    assert bare["enriched"] is False
+    assert bare["set_names"] == []
+    assert indexed["embedded"] is True
+    assert indexed["enriched"] is True
+    assert indexed["set_names"] == ["recipe"]
+
+
 def test_ingest_stores_document_under_caller_marker(tmp_path: Path) -> None:
     fetcher = _FakeFetcher(
         {
@@ -793,3 +821,36 @@ def test_spa_refuses_to_serve_files_outside_dist(tmp_path: Path) -> None:
         response = client.get(path, headers=_HEADERS)
         assert response.status_code == 404, path
         assert "live-token" not in response.text
+
+
+# The Documents page deliberately lists failed and pending documents, so fetching one by id must
+# work too. `get_document` used to apply `SELECTOR_SQL` (content not null, status ok) and answered
+# 404 "document not found" for a row the list had just shown, dead-ending the one page built to
+# surface those rows.
+def test_get_document_returns_failed_and_pending_documents(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    failed_id = _insert_document(conn, "failed-fetch", status="failed", content=None)
+    conn.execute("UPDATE documents SET error = 'HTTP 404' WHERE id = ?", (failed_id,))
+    pending_id = _insert_document(conn, "not-fetched-yet", status="pending", content=None)
+    conn.commit()
+
+    listed = client.get("/documents?limit=50", headers=_HEADERS).json()
+    assert {failed_id, pending_id} <= {item["id"] for item in listed["items"]}
+
+    failed = client.get(f"/documents/{failed_id}", headers=_HEADERS)
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+    assert failed.json()["error"] == "HTTP 404"
+
+    assert client.get(f"/documents/{pending_id}", headers=_HEADERS).status_code == 200
+
+
+# A tombstoned document stays gone: dropping SELECTOR_SQL must not also drop the delete filter.
+def test_get_document_still_hides_tombstoned_documents(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    document_id = _insert_document(conn, "to-be-deleted")
+    conn.commit()
+    assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 200
+
+    assert client.delete(f"/documents/{document_id}", headers=_HEADERS).status_code == 200
+    assert client.get(f"/documents/{document_id}", headers=_HEADERS).status_code == 404

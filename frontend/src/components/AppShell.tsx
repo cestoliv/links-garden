@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ApiClient } from '../api/client'
 import type { GraphAnchor } from '../api/types'
+import { DocumentPage } from '../pages/DocumentPage'
 import { DocumentsPage } from '../pages/DocumentsPage'
 import { GraphPage } from '../pages/GraphPage'
 import { ReviewPage } from '../pages/ReviewPage'
@@ -8,7 +9,7 @@ import { SearchPage } from '../pages/SearchPage'
 import { SetAdminPage } from '../pages/SetAdminPage'
 import { SetsPage } from '../pages/SetsPage'
 
-type PageId = 'search' | 'documents' | 'sets' | 'review' | 'admin' | 'graph'
+type PageId = 'search' | 'documents' | 'sets' | 'review' | 'admin' | 'graph' | 'document'
 
 const PAGES: { id: PageId; label: string }[] = [
   { id: 'search', label: 'Search' },
@@ -33,10 +34,21 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
   // graph on a document and switch to it in one click. No Context, no router: this is the whole
   // amount of cross-page state the dashboard needs.
   const [graphAnchor, setGraphAnchor] = useState<GraphAnchor | null>(null)
+  // The document view's own state: which document is open, and which page to return to. Back
+  // always lands on the page that was current the last time the view was entered from outside
+  // itself, so following a neighbour link from inside the view never overwrites it.
+  const [documentId, setDocumentId] = useState<number | null>(null)
+  const [documentReturnPage, setDocumentReturnPage] = useState<PageId>('search')
 
   function openGraph(anchor: GraphAnchor) {
     setGraphAnchor(anchor)
     setPage('graph')
+  }
+
+  function openDocument(id: number) {
+    if (page !== 'document') setDocumentReturnPage(page)
+    setDocumentId(id)
+    setPage('document')
   }
 
   return (
@@ -75,15 +87,40 @@ export function AppShell({ client, onUnauthorized, onSignOut }: AppShellProps) {
         </button>
       </header>
       <main>
-        {page === 'search' && <SearchPage client={client} onUnauthorized={onUnauthorized} />}
+        {page === 'search' && (
+          <SearchPage client={client} onUnauthorized={onUnauthorized} onOpenDocument={openDocument} />
+        )}
         {page === 'documents' && (
-          <DocumentsPage client={client} onUnauthorized={onUnauthorized} onOpenGraph={openGraph} />
+          <DocumentsPage
+            client={client}
+            onUnauthorized={onUnauthorized}
+            onOpenGraph={openGraph}
+            onOpenDocument={openDocument}
+          />
         )}
         {page === 'sets' && <SetsPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'review' && <ReviewPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'admin' && <SetAdminPage client={client} onUnauthorized={onUnauthorized} />}
         {page === 'graph' && (
-          <GraphPage client={client} anchor={graphAnchor} onAnchorChange={setGraphAnchor} onUnauthorized={onUnauthorized} />
+          <GraphPage
+            client={client}
+            anchor={graphAnchor}
+            onAnchorChange={setGraphAnchor}
+            onOpenDocument={openDocument}
+            onUnauthorized={onUnauthorized}
+          />
+        )}
+        {page === 'document' && documentId !== null && (
+          <DocumentPage
+            client={client}
+            documentId={documentId}
+            onOpenDocument={openDocument}
+            onCenterGraph={openGraph}
+            onBack={() => {
+              setPage(documentReturnPage)
+            }}
+            onUnauthorized={onUnauthorized}
+          />
         )}
       </main>
     </div>

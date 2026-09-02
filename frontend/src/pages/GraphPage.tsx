@@ -9,6 +9,7 @@ interface GraphPageProps {
   client: ApiClient
   anchor: GraphAnchor | null
   onAnchorChange: (anchor: GraphAnchor) => void
+  onOpenDocument: (id: number) => void
   onUnauthorized: () => void
 }
 
@@ -82,7 +83,7 @@ async function fetchGraph(client: ApiClient, anchor: GraphAnchor): Promise<Graph
   return { nodes: [...nodes.values()], edges: [...edges.values()] }
 }
 
-export function GraphPage({ client, anchor, onAnchorChange, onUnauthorized }: GraphPageProps) {
+export function GraphPage({ client, anchor, onAnchorChange, onOpenDocument, onUnauthorized }: GraphPageProps) {
   const [state, setState] = useState<GraphState>({ status: 'idle' })
   // Per-anchor within the session, not a library: re-clicking a node already visited this run
   // reuses the computed graph instead of re-fetching it.
@@ -132,7 +133,7 @@ export function GraphPage({ client, anchor, onAnchorChange, onUnauthorized }: Gr
       </p>
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[260px_1fr]">
         <RecentDocuments client={client} onUnauthorized={onUnauthorized} onPick={onAnchorChange} activeId={anchor?.id ?? null} />
-        <GraphCanvas state={state} anchor={anchor} reduceMotion={reduceMotion} onNodeClick={onAnchorChange} />
+        <GraphCanvas state={state} anchor={anchor} reduceMotion={reduceMotion} onNodeClick={onOpenDocument} />
       </div>
     </div>
   )
@@ -266,7 +267,7 @@ function GraphCanvas({
   state: GraphState
   anchor: GraphAnchor | null
   reduceMotion: boolean | null
-  onNodeClick: (anchor: GraphAnchor) => void
+  onNodeClick: (id: number) => void
 }) {
   if (state.status === 'idle') {
     return <EmptyPanel>Pick a document on the left to see its neighbours.</EmptyPanel>
@@ -334,7 +335,7 @@ function GraphCanvas({
                 isAnchor
                   ? undefined
                   : () => {
-                      onNodeClick({ id: node.id, title: node.title, url: node.url, embedded: true })
+                      onNodeClick(node.id)
                     }
               }
             >

@@ -2,12 +2,13 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
-import type { Document, Hit } from '../api/types'
+import type { Hit } from '../api/types'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 
 interface SearchPageProps {
   client: ApiClient
   onUnauthorized: () => void
+  onOpenDocument: (id: number) => void
 }
 
 type SearchState =
@@ -28,7 +29,7 @@ function hasWeakTopMatch(hits: Hit[]): boolean {
   return hits.length > 0 && hits[0].score <= RRF_SINGLE_SIDE_CEILING
 }
 
-export function SearchPage({ client, onUnauthorized }: SearchPageProps) {
+export function SearchPage({ client, onUnauthorized, onOpenDocument }: SearchPageProps) {
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query, 400)
   const [state, setState] = useState<SearchState>({ status: 'idle' })
@@ -96,8 +97,7 @@ export function SearchPage({ client, onUnauthorized }: SearchPageProps) {
           query={debouncedQuery.trim()}
           elapsedSeconds={elapsedSeconds}
           reduceMotion={reduceMotion}
-          client={client}
-          onUnauthorized={onUnauthorized}
+          onOpenDocument={onOpenDocument}
         />
       </div>
     </div>
@@ -109,15 +109,13 @@ function SearchResults({
   query,
   elapsedSeconds,
   reduceMotion,
-  client,
-  onUnauthorized,
+  onOpenDocument,
 }: {
   state: SearchState
   query: string
   elapsedSeconds: number
   reduceMotion: boolean | null
-  client: ApiClient
-  onUnauthorized: () => void
+  onOpenDocument: (id: number) => void
 }) {
   const fade = { initial: reduceMotion ? false : { opacity: 0 }, exit: { opacity: 0 } } as const
 
@@ -175,14 +173,7 @@ function SearchResults({
         </motion.p>
       )}
       {state.status === 'results' && state.hits.length > 0 && (
-        <ResultsList
-          hits={state.hits}
-          query={query}
-          fade={fade}
-          reduceMotion={reduceMotion}
-          client={client}
-          onUnauthorized={onUnauthorized}
-        />
+        <ResultsList hits={state.hits} query={query} fade={fade} reduceMotion={reduceMotion} onOpenDocument={onOpenDocument} />
       )}
     </AnimatePresence>
   )
@@ -193,15 +184,13 @@ function ResultsList({
   query,
   fade,
   reduceMotion,
-  client,
-  onUnauthorized,
+  onOpenDocument,
 }: {
   hits: Hit[]
   query: string
   fade: { initial: false | { opacity: number }; exit: { opacity: number } }
   reduceMotion: boolean | null
-  client: ApiClient
-  onUnauthorized: () => void
+  onOpenDocument: (id: number) => void
 }) {
   return (
     <motion.div key="results" {...fade} animate={{ opacity: 1 }} transition={{ duration: 0.15 }}>
@@ -212,61 +201,24 @@ function ResultsList({
       )}
       <ul className="flex flex-col gap-3">
         {hits.map((hit, index) => (
-          <ResultCard
-            key={hit.document_id}
-            hit={hit}
-            index={index}
-            reduceMotion={reduceMotion}
-            client={client}
-            onUnauthorized={onUnauthorized}
-          />
+          <ResultCard key={hit.document_id} hit={hit} index={index} reduceMotion={reduceMotion} onOpenDocument={onOpenDocument} />
         ))}
       </ul>
     </motion.div>
   )
 }
 
-type DetailState =
-  | { status: 'closed' }
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'open'; document: Document }
-
 function ResultCard({
   hit,
   index,
   reduceMotion,
-  client,
-  onUnauthorized,
+  onOpenDocument,
 }: {
   hit: Hit
   index: number
   reduceMotion: boolean | null
-  client: ApiClient
-  onUnauthorized: () => void
+  onOpenDocument: (id: number) => void
 }) {
-  const [detail, setDetail] = useState<DetailState>({ status: 'closed' })
-
-  function toggleDetail() {
-    if (detail.status === 'open' || detail.status === 'loading') {
-      setDetail({ status: 'closed' })
-      return
-    }
-    setDetail({ status: 'loading' })
-    client
-      .getDocument(hit.document_id)
-      .then((document) => {
-        setDetail({ status: 'open', document })
-      })
-      .catch((error: unknown) => {
-        if (isUnauthorized(error)) {
-          onUnauthorized()
-          return
-        }
-        setDetail({ status: 'error', message: describeError(error) })
-      })
-  }
-
   return (
     <motion.li
       initial={reduceMotion ? false : { opacity: 0, y: 6 }}
@@ -276,24 +228,15 @@ function ResultCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          {hit.url !== null ? (
-            <a
-              href={hit.url}
-              target="_blank"
-              rel="noreferrer"
-              className="truncate text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
-            >
-              {hit.title ?? hit.url}
-            </a>
-          ) : (
-            <button
-              type="button"
-              onClick={toggleDetail}
-              className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
-            >
-              {hit.title ?? 'Untitled'}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              onOpenDocument(hit.document_id)
+            }}
+            className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          >
+            {hit.title ?? hit.url ?? 'Untitled'}
+          </button>
           <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">
             {hit.source}
           </p>
@@ -305,39 +248,6 @@ function ResultCard({
       <p className="mt-2 line-clamp-4 text-sm break-words whitespace-pre-line text-zinc-600 dark:text-zinc-300">
         {hit.snippet}
       </p>
-      {hit.url === null && <DocumentDetail state={detail} />}
     </motion.li>
-  )
-}
-
-/** The inline fallback for a result with no `url`: a vault note or message has nothing to link
- * to, so its title becomes a toggle that fetches and shows the full document here instead. A
- * separate detail page would need a router this app doesn't have; expanding in place is the
- * smaller change and keeps the result in context. */
-function DocumentDetail({ state }: { state: DetailState }) {
-  if (state.status === 'closed') return null
-  if (state.status === 'loading') {
-    return <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">Loading document…</p>
-  }
-  if (state.status === 'error') {
-    return (
-      <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-400">
-        {state.message}
-      </p>
-    )
-  }
-  const { document } = state
-  const body = document.summary ?? document.content ?? document.message_text
-  return (
-    <div className="mt-3 border-t border-zinc-100 pt-3 text-sm text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
-      {body !== null ? (
-        <p className="max-h-64 overflow-y-auto break-words whitespace-pre-line">{body}</p>
-      ) : (
-        <p className="text-zinc-500 dark:text-zinc-400">No content stored for this document.</p>
-      )}
-      <p className="mt-2 truncate font-mono text-xs text-zinc-400 dark:text-zinc-500">
-        {document.source_ref}
-      </p>
-    </div>
   )
 }
