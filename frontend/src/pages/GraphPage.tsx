@@ -219,6 +219,11 @@ function RecentDocuments({
 const VIEW_SIZE = 600
 const CENTER = VIEW_SIZE / 2
 const RING_RADIUS: Record<1 | 2, number> = { 1: 140, 2: 260 }
+// A label is centred under its node, so the outer ring's leftmost and rightmost labels hang past
+// the layout's own bounds: a node at `CENTER - 260` sits at x = 40 and its label reaches x = -15,
+// which the SVG edge then clips mid-word. The viewBox is widened by this much on each side so
+// those labels stay readable. It pads the view, not the layout, so no node position changes.
+const LABEL_MARGIN = 70
 const NODE_RADIUS: Record<0 | 1 | 2, number> = { 0: 14, 1: 10, 2: 7 }
 const NODE_FILL: Record<0 | 1 | 2, string> = {
   0: 'fill-emerald-700 dark:fill-emerald-500',
@@ -298,7 +303,7 @@ function GraphCanvas({
     <AnimatePresence mode="wait">
       <motion.svg
         key={anchor.id}
-        viewBox={`0 0 ${String(VIEW_SIZE)} ${String(VIEW_SIZE)}`}
+        viewBox={`${String(-LABEL_MARGIN)} 0 ${String(VIEW_SIZE + LABEL_MARGIN * 2)} ${String(VIEW_SIZE)}`}
         initial={reduceMotion ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.2 }}
