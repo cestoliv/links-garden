@@ -10,6 +10,7 @@ export type Route =
   | { name: 'document'; id: number }
   | { name: 'sets'; active: string | null }
   | { name: 'review' }
+  | { name: 'pipeline' }
   | { name: 'admin' }
   | { name: 'graph'; anchorId: number | null }
   | { name: 'not-found'; path: string }
@@ -20,6 +21,7 @@ export type Route =
 const STATIC_ROUTES: Record<string, Route | undefined> = {
   documents: { name: 'documents' },
   review: { name: 'review' },
+  pipeline: { name: 'pipeline' },
   admin: { name: 'admin' },
   graph: { name: 'graph', anchorId: null },
 }

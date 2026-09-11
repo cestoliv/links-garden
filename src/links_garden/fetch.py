@@ -168,6 +168,20 @@ class Fetcher:
             from_cache=False,
         )
 
+    def forget_failure(self, url: str) -> bool:
+        """Drop a cached failure for `url`, so the next fetch really goes out. Returns whether
+        anything was dropped.
+
+        Only a failure is dropped. A cached success is what keeps a retry from re-spending a
+        credit on a URL that already worked, so removing it would make a retry cost money for
+        nothing.
+        """
+        cached = self._read_cache(url)
+        if cached is None or cached.error is None:
+            return False
+        self._cache_path(url).unlink(missing_ok=True)
+        return True
+
     def _cache_path(self, url: str) -> Path:
         digest = hashlib.sha256(url.encode()).hexdigest()
         return self._settings.fetch_cache_dir / f"{digest}.json"

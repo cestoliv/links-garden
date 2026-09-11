@@ -22,7 +22,9 @@ from links_garden.api import create_app
 from links_garden.config import Settings
 from links_garden.db import connect, create_session
 from links_garden.embed import pack_vector
+from links_garden.enrich import Enricher
 from links_garden.fetch import Fetcher, FetchResult
+from links_garden.runs import Stage, StageRunner
 from links_garden.sets import SetDefinition, create_set
 
 _TOKEN = "s3cr3t-test-token"
@@ -56,6 +58,11 @@ _PROTECTED_REQUESTS: list[tuple[str, str, dict[str, Any]]] = [
     ("PATCH", "/api/sets/recipe", {"json": {"description": "d"}}),
     ("DELETE", "/api/sets/recipe", {}),
     ("GET", "/api/review", {}),
+    ("GET", "/api/pipeline", {}),
+    ("POST", "/api/pipeline/embed/retry", {}),
+    ("POST", "/api/connections/firecrawl/ping", {}),
+    ("POST", "/api/connections/ollama/ping", {}),
+    ("POST", "/api/connections/ollama/generate", {"json": {"prompt": "hi"}}),
     ("POST", "/api/ingest", {"json": {"url": "https://example.test"}}),
     ("GET", "/api/docs", {}),
     ("GET", "/api/openapi.json", {}),
@@ -75,13 +82,26 @@ class _FakeEmbedder:
 class _FakeFetcher:
     """Canned, in-memory stand-in for `Fetcher`. Never touches the network."""
 
-    def __init__(self, responses: dict[str, FetchResult] | None = None) -> None:
+    def __init__(
+        self,
+        responses: dict[str, FetchResult] | None = None,
+        *,
+        credits: int | None = 1819,
+        credits_error: str | None = None,
+    ) -> None:
         self._responses = responses or {}
+        self.credits = credits
+        self.credits_error = credits_error
         self.spent = 0
 
     @property
     def at_cap(self) -> bool:
         return False
+
+    def remaining_credits(self) -> int | None:
+        if self.credits_error is not None:
+            raise RuntimeError(self.credits_error)
+        return self.credits
 
     def fetch(self, url: str, *, force_direct: bool = False) -> FetchResult:
         if url not in self._responses:
@@ -94,11 +114,12 @@ def _as_fetcher(fake: _FakeFetcher) -> Fetcher:
     return cast(Fetcher, fake)
 
 
-def _settings(tmp_path: Path, *, token: str = _TOKEN) -> Settings:
+def _settings(tmp_path: Path, *, token: str = _TOKEN, firecrawl_key: str = "") -> Settings:
     return Settings(
         _env_file=None,
         database_path=tmp_path / "garden.db",
         api_token=token,  # type: ignore[arg-type]
+        firecrawl_api_key=firecrawl_key,  # type: ignore[arg-type]
     )
 
 
@@ -107,11 +128,19 @@ def _make_app(
     *,
     token: str = _TOKEN,
     fetcher: Fetcher | None = None,
+    enricher: Enricher | None = None,
+    firecrawl_key: str = "",
     frontend_dist: Path | None = None,
+    stage_runner: StageRunner | None = None,
 ) -> tuple[TestClient, sqlite3.Connection]:
-    settings = _settings(tmp_path, token=token)
+    settings = _settings(tmp_path, token=token, firecrawl_key=firecrawl_key)
     app = create_app(
-        settings, fetcher=fetcher, embedder=_FakeEmbedder(), frontend_dist=frontend_dist
+        settings,
+        fetcher=fetcher,
+        embedder=_FakeEmbedder(),
+        enricher=enricher,
+        frontend_dist=frontend_dist,
+        stage_runner=stage_runner,
     )
     # create_app already ran the schema through its own throwaway connection; this one is only
     # for fixture setup, separate from whatever connection each request opens for itself.
@@ -783,6 +812,145 @@ def test_list_documents_includes_failed_and_pending_documents(tmp_path: Path) ->
     assert items[pending_id]["status"] == "pending"
 
 
+def test_pipeline_buckets_each_stage_and_lists_its_queue(tmp_path: Path) -> None:
+    # One document per stage boundary: a failed fetch, a pending fetch, a document waiting to
+    # embed and enrich, and a fully indexed one whose extraction is still pending.
+    client, conn = _make_app(tmp_path)
+    recipe = _create_recipe_set(conn)
+    assert recipe.id is not None
+    failed_id = _insert_document(conn, "failed-doc", content=None, status="failed")
+    conn.execute("UPDATE documents SET error = 'boom' WHERE id = ?", (failed_id,))
+    pending_id = _insert_document(conn, "pending-doc", content=None, status="pending")
+    waiting_id = _insert_document(conn, "waiting-doc", title="Waiting")
+    done_id = _insert_document(conn, "done-doc")
+    conn.execute(
+        "UPDATE documents SET chunks_hash = 'c1', enriched_hash = 'e1' WHERE id = ?", (done_id,)
+    )
+    conn.commit()
+    _insert_membership(conn, done_id, recipe.id, status="pending")
+
+    stages = {
+        stage["stage"]: stage
+        for stage in client.get("/api/pipeline", headers=_HEADERS).json()["stages"]
+    }
+
+    assert (stages["fetch"]["done"], stages["fetch"]["waiting"], stages["fetch"]["failed"]) == (
+        2,
+        1,
+        1,
+    )
+    # Failed first, so the thing that needs a human is at the top of the queue.
+    assert [(item["document_id"], item["state"]) for item in stages["fetch"]["items"]] == [
+        (failed_id, "failed"),
+        (pending_id, "waiting"),
+    ]
+    assert stages["fetch"]["items"][0]["detail"] == "boom"
+    # Only the two status='ok' documents are eligible to embed or enrich.
+    assert (stages["embed"]["done"], stages["embed"]["waiting"]) == (1, 1)
+    assert [item["document_id"] for item in stages["embed"]["items"]] == [waiting_id]
+    assert (stages["enrich"]["done"], stages["enrich"]["waiting"]) == (1, 1)
+    assert [item["document_id"] for item in stages["enrich"]["items"]] == [waiting_id]
+    assert (stages["extract"]["waiting"], stages["extract"]["failed"]) == (1, 0)
+    assert stages["extract"]["items"] == [
+        {
+            "document_id": done_id,
+            "title": None,
+            "url": None,
+            "source": "manual",
+            "state": "waiting",
+            "detail": "recipe",
+        }
+    ]
+
+
+def test_pipeline_hides_tombstoned_documents_from_every_stage(tmp_path: Path) -> None:
+    client, conn = _make_app(tmp_path)
+    _insert_document(conn, "gone", content=None, status="pending", deleted=True)
+
+    stages = client.get("/api/pipeline", headers=_HEADERS).json()["stages"]
+
+    assert all(stage["items"] == [] for stage in stages)
+    assert all(stage["waiting"] == 0 for stage in stages)
+
+
+def test_pipeline_ceiling_is_rejected_not_clamped(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path)
+
+    response = client.get("/api/pipeline", params={"limit": 51}, headers=_HEADERS)
+
+    assert response.status_code == 400
+
+
+def _inline_runner(stages: dict[Stage, object]) -> StageRunner:
+    """A runner that does the work on the calling thread, so a test needs no sleep to see it."""
+    return StageRunner(cast(Any, stages), spawn=lambda work: work())
+
+
+# A retry reports back through the pipeline view, because the page has no other channel: the
+# POST can only say "accepted", the stage itself finishes long after the response.
+def test_pipeline_retry_runs_the_stage_and_reports_the_result(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def embed() -> str:
+        calls.append("embed")
+        return "2 embedded, 7 chunks written"
+
+    client, _conn = _make_app(tmp_path, stage_runner=_inline_runner({"embed": embed}))
+
+    accepted = client.post("/api/pipeline/embed/retry", headers=_HEADERS)
+
+    assert accepted.status_code == 202
+    assert accepted.json()["stage"] == "embed"
+    assert calls == ["embed"]
+    run = client.get("/api/pipeline", headers=_HEADERS).json()["run"]
+    assert run["state"] == "done"
+    assert run["detail"] == "2 embedded, 7 chunks written"
+    assert run["finished_at"] is not None
+
+
+# A stage that raised must not read as a clean pass, or a broken ollama looks like an empty queue.
+def test_pipeline_retry_reports_a_failed_stage_as_an_error(tmp_path: Path) -> None:
+    def embed() -> str:
+        raise RuntimeError("0 embedded, 4 failed")
+
+    client, _conn = _make_app(tmp_path, stage_runner=_inline_runner({"embed": embed}))
+    client.post("/api/pipeline/embed/retry", headers=_HEADERS)
+
+    run = client.get("/api/pipeline", headers=_HEADERS).json()["run"]
+
+    assert run["state"] == "error"
+    assert run["detail"] == "RuntimeError: 0 embedded, 4 failed"
+
+
+# Single-flight across every stage, not one slot each: they share one ollama and the same rows.
+def test_pipeline_retry_refuses_a_second_run_while_one_is_in_flight(tmp_path: Path) -> None:
+    runner = StageRunner(
+        cast(Any, {"embed": lambda: "done", "enrich": lambda: "done"}),
+        # Never runs the work, so the first run stays in flight for the whole test.
+        spawn=lambda work: None,
+    )
+    client, _conn = _make_app(tmp_path, stage_runner=runner)
+
+    assert client.post("/api/pipeline/embed/retry", headers=_HEADERS).status_code == 202
+    busy = client.post("/api/pipeline/enrich/retry", headers=_HEADERS)
+
+    assert busy.status_code == 409
+    assert busy.json()["detail"] == "embed is already running"
+
+
+def test_pipeline_retry_rejects_a_stage_that_does_not_exist(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, stage_runner=_inline_runner({}))
+
+    assert client.post("/api/pipeline/vacuum/retry", headers=_HEADERS).status_code == 422
+
+
+# Nothing has run yet is `null`, not a fabricated idle run: the page shows no banner at all.
+def test_pipeline_reports_no_run_before_anything_has_run(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path)
+
+    assert client.get("/api/pipeline", headers=_HEADERS).json()["run"] is None
+
+
 def test_list_documents_ceiling_is_rejected_not_clamped(tmp_path: Path) -> None:
     client, _conn = _make_app(tmp_path)
 
@@ -992,3 +1160,138 @@ def test_health_exemption_does_not_leak_to_other_api_routes(tmp_path: Path) -> N
     assert client.get("/api/sets").status_code == 401
     assert client.get("/api/session").status_code == 401
     assert client.post("/api/health").status_code == 401
+
+
+class _FakeEnricher:
+    """Stands in for the ollama-backed `Enricher` in the connection checks."""
+
+    def __init__(
+        self,
+        *,
+        pulled: tuple[str, ...] = ("bge-m3", "qwen3"),
+        tags_error: str | None = None,
+        reply: str = "hello there",
+        generate_error: str | None = None,
+    ) -> None:
+        self._pulled = pulled
+        self._tags_error = tags_error
+        self._reply = reply
+        self._generate_error = generate_error
+        self.prompts: list[str] = []
+
+    def pulled_models(self) -> tuple[str, ...]:
+        if self._tags_error is not None:
+            raise RuntimeError(self._tags_error)
+        return self._pulled
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if self._generate_error is not None:
+            raise RuntimeError(self._generate_error)
+        return self._reply
+
+
+def _as_enricher(fake: _FakeEnricher) -> Enricher:
+    return cast(Enricher, fake)
+
+
+def test_firecrawl_ping_reports_the_remaining_budget(tmp_path: Path) -> None:
+    client, _conn = _make_app(
+        tmp_path, fetcher=_as_fetcher(_FakeFetcher(credits=1819)), firecrawl_key="fc-key"
+    )
+
+    body = client.post("/api/connections/firecrawl/ping", headers=_HEADERS).json()
+
+    assert body == {"name": "firecrawl", "ok": True, "detail": "1819 credits remaining"}
+
+
+# The direct fallback is not an outage, but it is not healthy either: fetches leave the home IP,
+# which is the one thing the Firecrawl backend exists to avoid.
+def test_firecrawl_ping_reports_the_direct_fallback_without_a_key(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, fetcher=_as_fetcher(_FakeFetcher()))
+
+    body = client.post("/api/connections/firecrawl/ping", headers=_HEADERS).json()
+
+    assert body["ok"] is False
+    assert "FIRECRAWL_API_KEY" in body["detail"]
+
+
+def test_firecrawl_ping_answers_200_when_the_ping_itself_fails(tmp_path: Path) -> None:
+    fetcher = _FakeFetcher(credits_error="connection refused")
+    client, _conn = _make_app(tmp_path, fetcher=_as_fetcher(fetcher), firecrawl_key="fc-key")
+
+    response = client.post("/api/connections/firecrawl/ping", headers=_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "firecrawl",
+        "ok": False,
+        "detail": "Ping failed: connection refused",
+    }
+
+
+def test_ollama_ping_reports_both_models_pulled(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(_FakeEnricher()))
+
+    body = client.post("/api/connections/ollama/ping", headers=_HEADERS).json()
+
+    assert body["ok"] is True
+    assert "bge-m3" in body["detail"]
+    assert "qwen3:8b" in body["detail"]
+
+
+# A missing model and a dead ollama need different answers: one is `ollama pull`, the other is
+# `ollama serve`.
+def test_ollama_ping_names_the_model_that_is_not_pulled(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(_FakeEnricher(pulled=("bge-m3",))))
+
+    body = client.post("/api/connections/ollama/ping", headers=_HEADERS).json()
+
+    assert body["ok"] is False
+    assert body["detail"] == "ollama answers, but qwen3:8b is not pulled"
+
+
+def test_ollama_ping_reports_an_unreachable_ollama(tmp_path: Path) -> None:
+    enricher = _FakeEnricher(tags_error="could not reach ollama at http://x/api/tags: refused")
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(enricher))
+
+    body = client.post("/api/connections/ollama/ping", headers=_HEADERS).json()
+
+    assert body["ok"] is False
+    assert body["detail"].startswith("could not reach ollama")
+
+
+def test_ollama_generate_returns_the_reply(tmp_path: Path) -> None:
+    enricher = _FakeEnricher(reply="Bonjour")
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(enricher))
+
+    body = client.post(
+        "/api/connections/ollama/generate", json={"prompt": "say hi"}, headers=_HEADERS
+    ).json()
+
+    assert body["reply"] == "Bonjour"
+    assert body["elapsed_ms"] >= 0
+    assert enricher.prompts == ["say hi"]
+
+
+# Unlike the pings, a generation that fails is a failed request: the caller asked for a reply.
+def test_ollama_generate_reports_a_failure_as_502(tmp_path: Path) -> None:
+    enricher = _FakeEnricher(generate_error="model qwen3:8b not found")
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(enricher))
+
+    response = client.post(
+        "/api/connections/ollama/generate", json={"prompt": "say hi"}, headers=_HEADERS
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "model qwen3:8b not found"
+
+
+def test_ollama_generate_rejects_an_empty_prompt(tmp_path: Path) -> None:
+    client, _conn = _make_app(tmp_path, enricher=_as_enricher(_FakeEnricher()))
+
+    response = client.post(
+        "/api/connections/ollama/generate", json={"prompt": ""}, headers=_HEADERS
+    )
+
+    assert response.status_code == 422

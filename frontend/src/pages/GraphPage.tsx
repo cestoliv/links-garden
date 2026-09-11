@@ -5,6 +5,7 @@ import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { DocumentListItem, GraphAnchor, Hit } from '../api/types'
 import { Link } from '../components/Link'
+import { PageHeader } from '../components/PageHeader'
 
 interface GraphPageProps {
   client: ApiClient
@@ -127,11 +128,12 @@ export function GraphPage({ client, anchor, onAnchorChange, onOpenDocument, onUn
   }, [anchor, client, onUnauthorized])
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10">
-      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Graph</h1>
-      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        One document’s neighbours, two hops out.
-      </p>
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageHeader
+        eyebrow="neighbourhood"
+        title="Graph"
+        description="One document’s neighbours, two hops out. Pick an anchor on the left, click a node to open it."
+      />
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[260px_1fr]">
         <RecentDocuments client={client} onUnauthorized={onUnauthorized} onPick={onAnchorChange} activeId={anchor?.id ?? null} />
         <GraphCanvas state={state} anchor={anchor} reduceMotion={reduceMotion} onNodeClick={onOpenDocument} />
@@ -183,9 +185,7 @@ function RecentDocuments({
 
   return (
     <div>
-      <h2 className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
-        Recent documents
-      </h2>
+      <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Recent documents</h2>
       {state.status === 'loading' && <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
       {state.status === 'error' && (
         <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
@@ -193,7 +193,7 @@ function RecentDocuments({
         </p>
       )}
       {state.status === 'ready' && (
-        <ul className="mt-2 flex flex-col gap-1">
+        <ul className="mt-2 flex max-h-[34rem] flex-col gap-1 overflow-y-auto pr-1">
           {state.items.map((item) => (
             <li key={item.id}>
               <Link
@@ -204,7 +204,7 @@ function RecentDocuments({
                 aria-current={activeId === item.id ? 'true' : undefined}
                 className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-150 ${
                   activeId === item.id
-                    ? 'bg-emerald-700 text-white dark:bg-emerald-600'
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                     : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
                 }`}
               >
@@ -228,7 +228,7 @@ const RING_RADIUS: Record<1 | 2, number> = { 1: 140, 2: 260 }
 const LABEL_MARGIN = 70
 const NODE_RADIUS: Record<0 | 1 | 2, number> = { 0: 14, 1: 10, 2: 7 }
 const NODE_FILL: Record<0 | 1 | 2, string> = {
-  0: 'fill-emerald-700 dark:fill-emerald-500',
+  0: 'fill-emerald-700 dark:fill-emerald-400',
   1: 'fill-emerald-400 dark:fill-emerald-600',
   2: 'fill-zinc-400 dark:fill-zinc-600',
 }
@@ -302,8 +302,9 @@ function GraphCanvas({
   const positions = layoutNodes(anchor.id, nodes)
 
   return (
-    <AnimatePresence mode="wait">
-      <motion.svg
+    <>
+      <AnimatePresence mode="wait">
+        <motion.svg
         key={anchor.id}
         viewBox={`${String(-LABEL_MARGIN)} 0 ${String(VIEW_SIZE + LABEL_MARGIN * 2)} ${String(VIEW_SIZE)}`}
         initial={reduceMotion ? false : { opacity: 0 }}
@@ -313,7 +314,7 @@ function GraphCanvas({
         role="img"
         aria-label={`Graph rooted on ${anchorLabel(anchor)}`}
       >
-        <g className="stroke-zinc-200 dark:stroke-zinc-800">
+        <g className="stroke-zinc-200 dark:stroke-emerald-400/15">
           {edges.map((edge) => {
             const from = positions.get(edge.a)
             const to = positions.get(edge.b)
@@ -348,7 +349,28 @@ function GraphCanvas({
           )
         })}
       </motion.svg>
-    </AnimatePresence>
+      </AnimatePresence>
+      {/* Three sizes and three colours encode hop distance; nothing on the page said so. */}
+      <GraphLegend />
+    </>
+  )
+}
+
+function GraphLegend() {
+  const tiers: { label: string; className: string; size: string }[] = [
+    { label: 'anchor', className: 'bg-emerald-400', size: 'size-3' },
+    { label: '1 hop', className: 'bg-emerald-600', size: 'size-2.5' },
+    { label: '2 hops', className: 'bg-zinc-600', size: 'size-2' },
+  ]
+  return (
+    <ul className="mt-2 flex flex-wrap items-center justify-center gap-4">
+      {tiers.map((tier) => (
+        <li key={tier.label} className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+          <span aria-hidden="true" className={`rounded-full ${tier.size} ${tier.className}`} />
+          {tier.label}
+        </li>
+      ))}
+    </ul>
   )
 }
 

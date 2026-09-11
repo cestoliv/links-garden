@@ -5,7 +5,8 @@ import { describeError, isUnauthorized } from '../api/client'
 import type { DocumentListItem, GraphAnchor } from '../api/types'
 import { buttonClassName } from '../components/buttonClassName'
 import { Link } from '../components/Link'
-import { StatusBadge } from '../components/StatusBadge'
+import { PageHeader } from '../components/PageHeader'
+import { PipelineStatus } from '../components/PipelineStatus'
 
 interface DocumentsPageProps {
   client: ApiClient
@@ -93,11 +94,19 @@ export function DocumentsPage({ client, onUnauthorized, onOpenGraph, onOpenDocum
   }, [isReady, done, fetchPage])
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-10">
-      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Documents</h1>
-      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Every document in the garden, newest first, with its index status.
-      </p>
+    <div className="mx-auto max-w-5xl px-6 py-8">
+      <PageHeader
+        eyebrow="index"
+        title="Documents"
+        description="Every document in the garden, newest first, with its index status."
+        actions={
+          state.status === 'ready' ? (
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              {state.items.length} loaded{state.done ? '' : ' +'}
+            </span>
+          ) : undefined
+        }
+      />
       <DocumentsList
         state={state}
         done={done}
@@ -137,7 +146,7 @@ function DocumentsList({
   }
   return (
     <>
-      <ul className="mt-6 flex flex-col gap-3">
+      <ul className="panel mt-6 divide-y divide-zinc-200 dark:divide-zinc-800">
         {state.items.map((item) => (
           <DocumentRow key={item.id} item={item} onOpenGraph={onOpenGraph} onOpenDocument={onOpenDocument} />
         ))}
@@ -166,45 +175,40 @@ function DocumentRow({
   onOpenDocument: (id: number) => void
 }) {
   return (
-    <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-start justify-between gap-3">
+    <li className="px-4 py-3 transition-colors duration-150 hover:bg-zinc-100/60 dark:hover:bg-zinc-800/40">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="min-w-0">
           <Link
             href={`/documents/${String(item.id)}`}
             onNavigate={() => {
               onOpenDocument(item.id)
             }}
-            className="truncate text-left font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+            className="block truncate text-left font-medium text-emerald-700 hover:underline dark:text-emerald-400"
           >
             {item.title ?? item.url ?? 'Untitled'}
           </Link>
-          <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{item.source}</p>
+          <p className="mt-1.5 truncate text-xs text-zinc-500 dark:text-zinc-400">
+            {item.source}
+            <span aria-hidden="true" className="px-2 text-zinc-700">/</span>
+            <span className="normal-case tracking-normal">
+              {item.set_names.length > 0 ? item.set_names.join(', ') : 'no sets yet'}
+            </span>
+          </p>
         </div>
-        <Link
+        <div className="flex shrink-0 items-center gap-3">
+          <PipelineStatus fetched={item.status} embedded={item.embedded} enriched={item.enriched} />
+          <Link
           href={`/graph/${String(item.id)}`}
           onNavigate={() => {
             onOpenGraph({ id: item.id, title: item.title, url: item.url, embedded: item.embedded })
           }}
           className={`shrink-0 ${buttonClassName({ variant: 'ghost', size: 'sm' })}`}
-        >
-          Graph
-        </Link>
+          >
+            Graph
+          </Link>
+        </div>
       </div>
-      {item.error !== null && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{item.error}</p>}
-      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">
-        <span className="flex items-center gap-1.5">
-          Fetched <StatusBadge status={item.status} />
-        </span>
-        <span className="flex items-center gap-1.5">
-          Embedded <StatusBadge status={item.embedded ? 'ok' : 'pending'} />
-        </span>
-        <span className="flex items-center gap-1.5">
-          Enriched <StatusBadge status={item.enriched ? 'ok' : 'pending'} />
-        </span>
-      </div>
-      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-        {item.set_names.length > 0 ? `Sets: ${item.set_names.join(', ')}` : 'No sets yet'}
-      </p>
+      {item.error !== null && <p className="mt-1.5 text-sm text-red-600 dark:text-red-400">{item.error}</p>}
     </li>
   )
 }

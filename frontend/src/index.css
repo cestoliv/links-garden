@@ -1,10 +1,124 @@
 @import 'tailwindcss';
 
+/* The dashboard ships one theme: a calm dark workspace. Every `dark:` utility already in the
+ * pages is the variant that renders, so the theme below only has to define one ramp instead of
+ * two, and no page has to be rewritten to opt in. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --font-sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Inter var', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, 'Cascadia Mono', monospace;
+
+  /* Neutral ramp: a slate with a trace of blue, dark enough to read for hours. */
+  --color-zinc-50: #f6f8fa;
+  --color-zinc-100: #e8ecf1;
+  --color-zinc-200: #d3dae2;
+  --color-zinc-300: #b2bcc8;
+  --color-zinc-400: #8b96a5;
+  --color-zinc-500: #6c7684;
+  --color-zinc-600: #4b5461;
+  --color-zinc-700: #2c333d;
+  --color-zinc-800: #1c222a;
+  --color-zinc-900: #11161c;
+  --color-zinc-950: #0b0f14;
+
+  /* Accent ramp: a muted teal-green. One accent, used for links, focus and the active nav. */
+  --color-emerald-300: #7fd8bd;
+  --color-emerald-400: #4cc39f;
+  --color-emerald-500: #2ba884;
+  --color-emerald-600: #1f8a6b;
+  --color-emerald-700: #196f57;
+  --color-emerald-800: #14523f;
+  --color-emerald-900: #0f3a2d;
+
+  --color-amber-100: #fff0cc;
+  --color-amber-300: #ffd166;
+  --color-amber-400: #ffc24b;
+  --color-amber-600: #b57d00;
+  --color-amber-800: #7a5500;
+  --color-amber-900: #3a2800;
+
+  --color-red-100: #ffdde3;
+  --color-red-300: #ff9aab;
+  --color-red-400: #ff7189;
+  --color-red-600: #e8365a;
+  --color-red-800: #8b1228;
+  --color-red-900: #4a0714;
+  --color-red-950: #260309;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 }
 
-body {
-  @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-100 antialiased;
+  }
+
+  th {
+    @apply text-xs font-semibold text-zinc-400;
+  }
+
+  code,
+  kbd,
+  samp {
+    @apply font-mono;
+  }
+
+  input,
+  select,
+  textarea {
+    @apply bg-zinc-900/80;
+  }
+
+  /* GFM task lists render real checkboxes inside a document's own content. */
+  input[type='checkbox'] {
+    @apply size-3.5 accent-emerald-400;
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-emerald-500) 45%, transparent);
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-emerald-500) 30%, transparent);
+    color: var(--color-zinc-50);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-zinc-950);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-zinc-700);
+    border: 2px solid var(--color-zinc-950);
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-zinc-600);
+  }
+}
+
+@utility panel {
+  @apply rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900;
+}
+
+/* Small section label. Uppercase and tracked just enough to read as a label rather than as
+ * body text, in the same sans as everything else. */
+@utility hud-label {
+  @apply text-[0.6875rem] font-semibold tracking-[0.06em] text-zinc-500 uppercase;
 }

@@ -70,6 +70,43 @@ export interface ReviewItem {
   error: string | null
 }
 
+/** The four stages of ingestion, in the order a document passes through them. */
+export type PipelineStageName = 'fetch' | 'embed' | 'enrich' | 'extract'
+
+export interface PipelineItem {
+  document_id: number
+  title: string | null
+  url: string | null
+  source: string
+  state: 'waiting' | 'failed'
+  /** The fetch error, or the set name for an extraction. Null when there is nothing to add. */
+  detail: string | null
+}
+
+export interface PipelineStage {
+  stage: PipelineStageName
+  done: number
+  waiting: number
+  failed: number
+  /** The head of this stage's queue, failures first. Capped by the API's `limit`. */
+  items: PipelineItem[]
+}
+
+export interface StageRun {
+  stage: PipelineStageName
+  state: 'running' | 'done' | 'error'
+  started_at: string
+  finished_at: string | null
+  /** The summary the stage reported, or the error that ended it. */
+  detail: string | null
+}
+
+export interface Pipeline {
+  stages: PipelineStage[]
+  /** The run in flight, or the last one to finish. Null until a stage has been run. */
+  run: StageRun | null
+}
+
 export interface DocumentListItem {
   id: number
   source: string
@@ -105,4 +142,17 @@ export interface IngestResult {
   status: string
   title: string | null
   error: string | null
+}
+
+/** One third-party dependency as of the last ping. Nothing is cached server-side: the answer is
+ * only true for the instant the button was pressed. */
+export interface Connection {
+  name: 'firecrawl' | 'ollama'
+  ok: boolean
+  detail: string
+}
+
+export interface Generation {
+  reply: string
+  elapsed_ms: number
 }

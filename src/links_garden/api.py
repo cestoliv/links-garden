@@ -37,7 +37,9 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -56,8 +58,11 @@ from links_garden.db import (
     initialize,
     tombstone,
 )
-from links_garden.embed import SELECTOR_SQL, Embedder, EmbedderLike
+from links_garden.embed import SELECTOR_SQL, Embedder, EmbedderLike, index_documents
+from links_garden.enrich import Enricher, enrich_documents
+from links_garden.extract_sets import extract_pending
 from links_garden.fetch import Fetcher
+from links_garden.runs import StageBusy, StageRun, StageRunner
 from links_garden.search import Hit, find_related, search
 from links_garden.sets import (
     SetDefinition,
@@ -68,7 +73,7 @@ from links_garden.sets import (
     list_sets,
     update_set,
 )
-from links_garden.sync import ingest_url, resolve_status
+from links_garden.sync import ingest_url, resolve_status, retry_fetches
 
 _DOCUMENT_COLUMNS = (
     "id, source, source_ref, url, parent_document_id, title, author, content, summary, "
@@ -145,6 +150,49 @@ class DocumentListItemOut(BaseModel):
 class DocumentListOut(BaseModel):
     items: list[DocumentListItemOut]
     next_cursor: str | None
+
+
+PipelineStage = Literal["fetch", "embed", "enrich", "extract"]
+
+
+class PipelineItemOut(BaseModel):
+    """One document sitting at a stage: enough to name it, link it, and say why it is stuck."""
+
+    document_id: int
+    title: str | None
+    url: str | None
+    source: str
+    state: Literal["waiting", "failed"]
+    detail: str | None
+
+
+class PipelineStageOut(BaseModel):
+    """One stage of the ingestion pipeline, with a sample of what is still in its queue.
+
+    `done + waiting + failed` counts documents eligible for that stage, so the totals differ
+    between stages: a document that failed to fetch never becomes eligible to embed.
+    """
+
+    stage: PipelineStage
+    done: int
+    waiting: int
+    failed: int
+    items: list[PipelineItemOut]
+
+
+class StageRunOut(BaseModel):
+    """The stage run in flight, or the last one to finish. Forgotten on restart by design."""
+
+    stage: PipelineStage
+    state: Literal["running", "done", "error"]
+    started_at: str
+    finished_at: str | None
+    detail: str | None
+
+
+class PipelineOut(BaseModel):
+    stages: list[PipelineStageOut]
+    run: StageRunOut | None = None
 
 
 class SetOut(BaseModel):
@@ -454,6 +502,94 @@ def list_review(conn: sqlite3.Connection, *, limit: int = 50) -> list[ReviewItem
         )
         for row in rows
     ]
+
+
+_PIPELINE_SAMPLE_LIMIT = 10
+
+# One (counts, queue) SQL pair per stage. Each stage counts only the documents eligible for it:
+# a failed fetch never becomes eligible to embed, so the four totals are deliberately different.
+# `waiting` means "never ran", read from the stage's own stored hash rather than from a job
+# table, because there is no queue on disk. The pipeline is a scan, and these are its leftovers.
+_PIPELINE_QUERIES: tuple[tuple[PipelineStage, str, str], ...] = (
+    (
+        "fetch",
+        "SELECT COALESCE(SUM(status = 'ok'), 0) AS done, "
+        "COALESCE(SUM(status = 'pending'), 0) AS waiting, "
+        "COALESCE(SUM(status = 'failed'), 0) AS failed "
+        "FROM documents WHERE deleted_at IS NULL",
+        "SELECT id AS document_id, title, url, source, "
+        "CASE WHEN status = 'failed' THEN 'failed' ELSE 'waiting' END AS state, error AS detail "
+        "FROM documents WHERE deleted_at IS NULL AND status IN ('pending', 'failed') "
+        "ORDER BY status = 'failed' DESC, created_at DESC, id DESC LIMIT ?",
+    ),
+    (
+        "embed",
+        "SELECT COALESCE(SUM(d.chunks_hash IS NOT NULL), 0) AS done, "
+        "COALESCE(SUM(d.chunks_hash IS NULL), 0) AS waiting, 0 AS failed "
+        f"FROM documents d WHERE {SELECTOR_SQL}",
+        "SELECT d.id AS document_id, d.title, d.url, d.source, 'waiting' AS state, "
+        "NULL AS detail FROM documents d "
+        f"WHERE {SELECTOR_SQL} AND d.chunks_hash IS NULL "
+        "ORDER BY d.created_at DESC, d.id DESC LIMIT ?",
+    ),
+    (
+        "enrich",
+        "SELECT COALESCE(SUM(d.enriched_hash IS NOT NULL), 0) AS done, "
+        "COALESCE(SUM(d.enriched_hash IS NULL), 0) AS waiting, 0 AS failed "
+        f"FROM documents d WHERE {SELECTOR_SQL}",
+        "SELECT d.id AS document_id, d.title, d.url, d.source, 'waiting' AS state, "
+        "NULL AS detail FROM documents d "
+        f"WHERE {SELECTOR_SQL} AND d.enriched_hash IS NULL "
+        "ORDER BY d.created_at DESC, d.id DESC LIMIT ?",
+    ),
+    (
+        "extract",
+        "SELECT COALESCE(SUM(sm.status = 'ok'), 0) AS done, "
+        "COALESCE(SUM(sm.status = 'pending'), 0) AS waiting, "
+        "COALESCE(SUM(sm.status IN ('partial', 'failed')), 0) AS failed "
+        "FROM set_memberships sm JOIN documents d ON d.id = sm.document_id "
+        f"WHERE {SELECTOR_SQL}",
+        "SELECT d.id AS document_id, d.title, d.url, d.source, "
+        "CASE WHEN sm.status = 'pending' THEN 'waiting' ELSE 'failed' END AS state, "
+        "s.name AS detail FROM set_memberships sm "
+        "JOIN documents d ON d.id = sm.document_id JOIN sets s ON s.id = sm.set_id "
+        f"WHERE sm.status != 'ok' AND {SELECTOR_SQL} "
+        "ORDER BY sm.status = 'pending', d.id DESC LIMIT ?",
+    ),
+)
+
+
+def pipeline(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = _PIPELINE_SAMPLE_LIMIT,
+    run: StageRun | None = None,
+) -> PipelineOut:
+    """Where the corpus stands at each stage, with the head of every stage's queue."""
+    stages: list[PipelineStageOut] = []
+    for stage, counts_sql, items_sql in _PIPELINE_QUERIES:
+        counts = conn.execute(counts_sql).fetchone()
+        rows = conn.execute(items_sql, (limit,)).fetchall()
+        stages.append(
+            PipelineStageOut(
+                stage=stage,
+                done=counts["done"],
+                waiting=counts["waiting"],
+                failed=counts["failed"],
+                items=[
+                    PipelineItemOut(
+                        document_id=row["document_id"],
+                        title=row["title"],
+                        url=row["url"],
+                        source=row["source"],
+                        state=row["state"],
+                        detail=row["detail"],
+                    )
+                    for row in rows
+                ],
+            )
+        )
+    return PipelineOut(stages=stages, run=None if run is None else StageRunOut(**asdict(run)))
 
 
 def patch_record(
@@ -847,6 +983,187 @@ def _review_router(get_conn: GetConn) -> APIRouter:
     return router
 
 
+class ConnectionOut(BaseModel):
+    """One third-party dependency, as of the moment the ping ran. Nothing is cached: the answer
+    is only true for the instant it was measured."""
+
+    name: Literal["firecrawl", "ollama"]
+    ok: bool
+    detail: str
+
+
+class GenerationIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
+class GenerationOut(BaseModel):
+    reply: str
+    elapsed_ms: int
+
+
+def _pipeline_router(get_conn: GetConn, runner: StageRunner) -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/pipeline")
+    async def get_pipeline_route(
+        limit: int = _PIPELINE_SAMPLE_LIMIT, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> PipelineOut:
+        if limit < 1 or limit > 50:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 50")
+        return pipeline(conn, limit=limit, run=runner.latest)
+
+    # 202, not 200: the stage runs for minutes to hours, so all this returns is the accepted
+    # run. Its outcome arrives through GET /pipeline, which the dashboard already polls.
+    @router.post("/pipeline/{stage}/retry", status_code=202)
+    async def post_pipeline_retry(stage: PipelineStage) -> StageRunOut:
+        try:
+            run = runner.start(stage)
+        except StageBusy as busy:
+            raise HTTPException(status_code=409, detail=str(busy)) from busy
+        return StageRunOut(**asdict(run))
+
+    return router
+
+
+def _stage_summary(summary: str, *, failed: int) -> str:
+    """Reports a stage that failed documents as an error, exactly as the CLI exits 1 for it.
+
+    A document the model declines to classify is routine and leaves nothing behind. A document
+    that failed means the backend broke mid-run, and the run must not read as a clean success.
+    """
+    if failed:
+        raise RuntimeError(f"{summary}, {failed} failed")
+    return summary
+
+
+def _stage_actions(
+    settings: Settings, fetcher: Fetcher, embedder: EmbedderLike, enricher: Enricher
+) -> dict[PipelineStage, Callable[[], str]]:
+    """What each retry button runs.
+
+    Every action opens its own connection and closes it: the work happens on a background
+    thread, and a sqlite connection belongs to the thread that opened it.
+    """
+
+    def fetch_stage() -> str:
+        conn = connect(settings.database_path)
+        try:
+            report = retry_fetches(conn, fetcher)
+        finally:
+            conn.close()
+        skipped = f", {report.urls_skipped} left for the next run" if report.urls_skipped else ""
+        return _stage_summary(f"{report.urls_fetched} fetched{skipped}", failed=0)
+
+    def embed_stage() -> str:
+        conn = connect(settings.database_path)
+        try:
+            report = index_documents(conn, settings, embedder)
+        finally:
+            conn.close()
+        return _stage_summary(
+            f"{report.documents_indexed} embedded, {report.chunks_written} chunks written",
+            failed=report.documents_failed,
+        )
+
+    def enrich_stage() -> str:
+        conn = connect(settings.database_path)
+        try:
+            report = enrich_documents(conn, settings, enricher)
+        finally:
+            conn.close()
+        return _stage_summary(
+            f"{report.documents_enriched} enriched, "
+            f"{report.memberships_written} memberships written",
+            failed=report.documents_failed,
+        )
+
+    def extract_stage() -> str:
+        conn = connect(settings.database_path)
+        try:
+            report = extract_pending(conn, enricher)
+        finally:
+            conn.close()
+        return _stage_summary(
+            f"{report.memberships_ok} filled, {report.memberships_partial} partial",
+            failed=report.memberships_failed,
+        )
+
+    return {
+        "fetch": fetch_stage,
+        "embed": embed_stage,
+        "enrich": enrich_stage,
+        "extract": extract_stage,
+    }
+
+
+def _connection_router(settings: Settings, fetcher: Fetcher, enricher: Enricher) -> APIRouter:
+    """Ping Firecrawl and ollama on demand, and prove ollama can still generate.
+
+    Both pings answer 200 with `ok: false` rather than a 5xx: the status IS the answer here, and
+    a dashboard row showing "ollama is down" is the feature, not a failed request. Only the
+    generation check raises, because a caller asked for a reply and got none.
+
+    Every handler is `def`, not `async def`, unlike the rest of this file. These calls go out
+    over the network and a generation takes tens of seconds, so FastAPI must run them in its
+    threadpool. On the event loop they would stall every other request, including the pipeline
+    poll running beside them.
+    """
+    router = APIRouter()
+
+    @router.post("/connections/firecrawl/ping")
+    def post_firecrawl_ping() -> ConnectionOut:
+        if settings.effective_fetch_backend == "direct":
+            return ConnectionOut(
+                name="firecrawl",
+                ok=False,
+                detail=("No FIRECRAWL_API_KEY. Fetching goes out direct, from this machine's IP."),
+            )
+        # The credit-usage endpoint is the ping on purpose: it reports the budget and costs
+        # nothing. A scrape would answer the same question and spend one of 1000 monthly fetches.
+        try:
+            remaining = fetcher.remaining_credits()
+        # Broad on purpose: `remaining_credits` does not catch, and an httpx error, a
+        # non-JSON body and a changed payload shape all mean the same thing to the reader.
+        except Exception as exc:
+            return ConnectionOut(name="firecrawl", ok=False, detail=f"Ping failed: {exc}")
+        return ConnectionOut(
+            name="firecrawl",
+            ok=True,
+            detail=f"{remaining} credits remaining" if remaining is not None else "reachable",
+        )
+
+    @router.post("/connections/ollama/ping")
+    def post_ollama_ping() -> ConnectionOut:
+        try:
+            pulled = enricher.pulled_models()
+        except RuntimeError as exc:
+            return ConnectionOut(name="ollama", ok=False, detail=str(exc))
+        wanted = (settings.embedding_model, settings.extraction_model)
+        missing = [model for model in wanted if model.split(":")[0] not in pulled]
+        if missing:
+            return ConnectionOut(
+                name="ollama",
+                ok=False,
+                detail=f"ollama answers, but {', '.join(missing)} is not pulled",
+            )
+        return ConnectionOut(
+            name="ollama",
+            ok=True,
+            detail=f"{settings.embedding_model} and {settings.extraction_model} are pulled",
+        )
+
+    @router.post("/connections/ollama/generate")
+    def post_ollama_generate(body: GenerationIn) -> GenerationOut:
+        started = time.monotonic()
+        try:
+            reply = enricher.generate(body.prompt)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return GenerationOut(reply=reply, elapsed_ms=round((time.monotonic() - started) * 1000))
+
+    return router
+
+
 def _ingest_router(get_conn: GetConn, fetcher: Fetcher) -> APIRouter:
     router = APIRouter()
 
@@ -917,7 +1234,9 @@ def create_app(
     *,
     fetcher: Fetcher | None = None,
     embedder: EmbedderLike | None = None,
+    enricher: Enricher | None = None,
     frontend_dist: Path | None = None,
+    stage_runner: StageRunner | None = None,
 ) -> FastAPI:
     """Build the API. Refuses to start with an empty `API_TOKEN`: an empty configured token
     matching an empty header would serve the whole garden to anything that can reach the port.
@@ -943,6 +1262,14 @@ def create_app(
     # boundaries; binding fresh, definitely-typed names instead avoids that everywhere at once.
     resolved_fetcher: Fetcher = fetcher if fetcher is not None else Fetcher(settings)
     resolved_embedder: EmbedderLike = embedder if embedder is not None else Embedder(settings)
+    resolved_enricher: Enricher = enricher if enricher is not None else Enricher(settings)
+    resolved_runner: StageRunner = (
+        stage_runner
+        if stage_runner is not None
+        else StageRunner(
+            _stage_actions(settings, resolved_fetcher, resolved_embedder, resolved_enricher)
+        )
+    )
 
     # Resolved before the middleware is built: the middleware exempts exactly the files the SPA
     # router serves, so both need the same resolved directory, and `is_relative_to` below only
@@ -966,6 +1293,10 @@ def create_app(
     app.include_router(_set_router(get_conn), prefix=_API_PREFIX)
     app.include_router(_set_admin_router(get_conn), prefix=_API_PREFIX)
     app.include_router(_review_router(get_conn), prefix=_API_PREFIX)
+    app.include_router(_pipeline_router(get_conn, resolved_runner), prefix=_API_PREFIX)
+    app.include_router(
+        _connection_router(settings, resolved_fetcher, resolved_enricher), prefix=_API_PREFIX
+    )
     app.include_router(_ingest_router(get_conn, resolved_fetcher), prefix=_API_PREFIX)
 
     if dist_dir is not None:

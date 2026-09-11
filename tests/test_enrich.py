@@ -168,6 +168,59 @@ def test_check_returns_false_when_model_absent_true_when_present(tmp_path: Path)
     assert enricher.check() is True
 
 
+# --- Enricher.generate and Enricher.pulled_models ---
+#
+# The dashboard's ollama check. `generate` sends no `format`, unlike every other call in this
+# module: it exists to show the model's own words back to whoever pressed the button.
+
+
+def test_generate_sends_the_prompt_unconstrained_and_returns_the_reply(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"message": {"content": "Bonjour"}})
+
+    enricher = Enricher(_settings(tmp_path), client=_client(handler))
+
+    assert enricher.generate("say hi in french") == "Bonjour"
+    sent = json.loads(requests[0].content)
+    assert sent["messages"] == [{"role": "user", "content": "say hi in french"}]
+    assert "format" not in sent
+    assert sent["think"] is False
+    assert sent["options"] == {"temperature": 0}
+
+
+def test_generate_raises_with_the_url_and_model_when_ollama_fails(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    settings = _settings(tmp_path, ollama_url="http://127.0.0.1:11434", extraction_model="qwen3:8b")
+    enricher = Enricher(settings, client=_client(handler))
+
+    with pytest.raises(RuntimeError, match=re.escape("127.0.0.1:11434")) as exc_info:
+        enricher.generate("hi")
+    assert "qwen3:8b" in str(exc_info.value)
+
+
+# `check` flattens a dead ollama and a missing model to False. `pulled_models` keeps them apart,
+# which is what lets the dashboard say `ollama serve` or `ollama pull` rather than just "broken".
+def test_pulled_models_drops_tags_and_raises_when_ollama_is_unreachable(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"models": [{"name": "bge-m3:latest"}, {"name": "qwen3:8b"}]}
+        )
+
+    enricher = Enricher(_settings(tmp_path), client=_client(handler))
+    assert enricher.pulled_models() == ("bge-m3", "qwen3")
+
+    def dead(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(RuntimeError, match="could not reach ollama"):
+        Enricher(_settings(tmp_path), client=_client(dead)).pulled_models()
+
+
 # --- Enricher.extract ---
 #
 # Separate section: `extract` has its own `format` (the set's own schema, not the fixed
