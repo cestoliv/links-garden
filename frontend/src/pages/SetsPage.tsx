@@ -6,6 +6,7 @@ import { Button } from '../components/Button'
 import { DeleteRowButton } from '../components/DeleteRowButton'
 import { DocumentLink } from '../components/DocumentLink'
 import { Link } from '../components/Link'
+import { PageHeader } from '../components/PageHeader'
 import { StatusBadge } from '../components/StatusBadge'
 import type { SchemaColumn } from '../utils/schema'
 import { formatCellValue, schemaColumns } from '../utils/schema'
@@ -43,8 +44,12 @@ export function SetsPage({ client, onUnauthorized, activeSet, onSelectSet }: Set
   }, [client, onUnauthorized])
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-10">
-      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Sets</h1>
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageHeader
+        eyebrow="structured data"
+        title="Sets"
+        description="Documents the classifier matched to a schema, as a table of extracted fields."
+      />
       {state.status === 'loading' && <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading sets…</p>}
       {state.status === 'error' && (
         <p role="alert" className="mt-6 text-sm text-red-600 dark:text-red-400">
@@ -170,7 +175,7 @@ function SetTable({ client, set, onUnauthorized }: { client: ApiClient; set: Set
             name="set-status-filter"
             value={statusFilter}
             onChange={(event) => { setStatusFilter(event.target.value) }}
-            className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            className="cursor-pointer appearance-none rounded-md border border-zinc-300 bg-white bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 12 12%22 fill=%22none%22 stroke=%22%236c7684%22 stroke-width=%221.4%22><path d=%22m2.5 4.5 3.5 3.5 3.5-3.5%22/></svg>')] bg-[length:12px] bg-[position:right_0.5rem_center] bg-no-repeat py-1 pr-7 pl-2 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
           >
             {STATUS_OPTIONS.map((option) => (
               <option key={option} value={option}>

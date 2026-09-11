@@ -93,6 +93,63 @@ def ingest_url(
     return extracted
 
 
+def retry_fetches(conn: sqlite3.Connection, fetcher: Fetcher) -> SyncReport:
+    """Re-fetch every document still `pending` or `failed`, in place.
+
+    Re-fetches by the row's own identity rather than through `ingest_url`: an Obsidian URL is
+    stored under the source_ref `<note path>#<url>`, so ingesting its URL afresh would insert a
+    second document instead of healing the one on screen.
+
+    A cached failure is dropped first, or the retry replays the same error for free and the
+    button appears to do nothing. A cached success is left alone, so a retry costs a credit only
+    for a URL that never actually came back.
+    """
+    report = SyncReport()
+    rows = conn.execute(
+        "SELECT id, source, source_ref, url, parent_document_id FROM documents "
+        "WHERE deleted_at IS NULL AND status IN ('pending', 'failed') AND url IS NOT NULL "
+        "ORDER BY id"
+    ).fetchall()
+    for row in rows:
+        report.urls_seen += 1
+        try:
+            _retry_one_fetch(conn, row, fetcher, report)
+        except Exception:
+            logger.exception("failed to retry document %s", row["id"])
+            conn.rollback()
+    return report
+
+
+def _retry_one_fetch(
+    conn: sqlite3.Connection, row: sqlite3.Row, fetcher: Fetcher, report: SyncReport
+) -> None:
+    url: str = row["url"]
+    # Checked before the cache is dropped: at the cap the fetch cannot go out anyway, and
+    # dropping the entry would strand the URL with neither a cached error nor a fresh one.
+    if fetcher.at_cap:
+        report.urls_skipped += 1
+        return
+    fetcher.forget_failure(url)
+    extracted = extract(url, fetcher)
+    status = resolve_status(extracted, fetcher)
+    if status == "skipped":
+        report.urls_skipped += 1
+        return
+    upsert_extracted(
+        conn,
+        source=row["source"],
+        source_ref=row["source_ref"],
+        url=url,
+        parent_document_id=row["parent_document_id"],
+        extracted=extracted,
+        status=status,
+    )
+    if status == "ok":
+        report.urls_fetched += 1
+    else:
+        report.urls_failed += 1
+
+
 def resolve_status(extracted: Extracted, fetcher: Fetcher) -> Literal["ok", "failed", "skipped"]:
     """The terminal status of one extraction: `ok`, a genuine `failed`, or `skipped` when the
     run cap was hit mid-extraction and nothing was actually learned about the URL.

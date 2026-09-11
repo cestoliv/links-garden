@@ -1,14 +1,19 @@
 import type {
+  Connection,
   Document,
   DocumentListPage,
+  Generation,
   Hit,
   IngestResult,
   IngestSource,
   JsonSchema,
+  Pipeline,
+  PipelineStageName,
   ReviewItem,
   SetDefinition,
   SetDeleteResult,
   SetRecord,
+  StageRun,
 } from './types'
 
 /** Thrown for any non-2xx response. `status` lets callers special-case 401 without string matching. */
@@ -70,7 +75,16 @@ export interface ApiClient {
     fields: Record<string, unknown>,
   ) => Promise<SetRecord>
   listReview: (limit?: number) => Promise<ReviewItem[]>
+  getPipeline: (limit?: number) => Promise<Pipeline>
+  /** Starts one stage in the background. Rejects with a 409 when a run is in flight. */
+  retryStage: (stage: PipelineStageName) => Promise<StageRun>
   ingest: (url: string, source?: IngestSource) => Promise<IngestResult>
+  /** Checks Firecrawl through its credit endpoint, which reports the budget and spends nothing. */
+  pingFirecrawl: () => Promise<Connection>
+  /** Checks that ollama answers and that both models are pulled. */
+  pingOllama: () => Promise<Connection>
+  /** Sends one prompt to the extraction model, to prove generation itself works. */
+  generateWithOllama: (prompt: string) => Promise<Generation>
 }
 
 /** A client bound to one base URL. Auth rides on the browser's session cookie, sent
@@ -121,8 +135,17 @@ export function createApiClient(baseUrl: string): ApiClient {
         body: JSON.stringify(fields),
       }),
     listReview: (limit) => request(`/review${query({ limit })}`),
+    getPipeline: (limit) => request(`/pipeline${query({ limit })}`),
+    retryStage: (stage) => request(`/pipeline/${stage}/retry`, { method: 'POST' }),
     ingest: (url, source) =>
       request('/ingest', { method: 'POST', body: JSON.stringify({ url, source }) }),
+    pingFirecrawl: () => request('/connections/firecrawl/ping', { method: 'POST' }),
+    pingOllama: () => request('/connections/ollama/ping', { method: 'POST' }),
+    generateWithOllama: (prompt) =>
+      request('/connections/ollama/generate', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
   }
 }
 

@@ -28,18 +28,18 @@ export function TokenGate({ error, busy, onSubmit }: TokenGateProps) {
         initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
-        className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+        className="panel w-full max-w-sm p-6 shadow-sm"
       >
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Links Garden</h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="hud-label">Sign in</p>
+        <h1 className="mt-1.5 text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+          Links Garden
+        </h1>
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
           Enter the API token to connect. It's exchanged for a session cookie and never stored in
           this browser tab; sign out any time to revoke it.
         </p>
         <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-2" noValidate>
-          <label
-            htmlFor="api-token"
-            className="text-sm font-medium text-zinc-700 dark:text-zinc-300"
-          >
+          <label htmlFor="api-token" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
             API token
           </label>
           <input
@@ -52,7 +52,7 @@ export function TokenGate({ error, busy, onSubmit }: TokenGateProps) {
             onChange={(event) => {
               setValue(event.target.value)
             }}
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 outline-none focus:border-emerald-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
           />
           {error !== null && (
             <p role="alert" className="text-sm text-red-600 dark:text-red-400">
@@ -60,7 +60,7 @@ export function TokenGate({ error, busy, onSubmit }: TokenGateProps) {
             </p>
           )}
           <Button type="submit" disabled={busy || value.trim() === ''} className="mt-2">
-            {busy ? 'Checking…' : 'Connect'}
+            {busy ? 'Checking…' : 'Sign in'}
           </Button>
         </form>
       </motion.div>

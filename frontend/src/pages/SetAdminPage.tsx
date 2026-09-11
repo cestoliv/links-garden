@@ -4,6 +4,7 @@ import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { SetDefinition } from '../api/types'
 import { Button } from '../components/Button'
+import { PageHeader } from '../components/PageHeader'
 
 interface SetAdminPageProps {
   client: ApiClient
@@ -59,15 +60,19 @@ export function SetAdminPage({ client, onUnauthorized }: SetAdminPageProps) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Set admin</h1>
-        {mode.kind === 'closed' && (
-          <Button size="sm" onClick={() => { setMode({ kind: 'create' }) }}>
-            New set
-          </Button>
-        )}
-      </div>
+    <div className="mx-auto max-w-3xl px-6 py-8">
+      <PageHeader
+        eyebrow="schemas"
+        title="Set admin"
+        description="Define what a set is: its name, what it describes, and the JSON Schema the classifier extracts into."
+        actions={
+          mode.kind === 'closed' ? (
+            <Button size="sm" onClick={() => { setMode({ kind: 'create' }) }}>
+              New set
+            </Button>
+          ) : undefined
+        }
+      />
       <div className="mt-6">
         {mode.kind !== 'closed' ? (
           <SetForm
@@ -279,6 +284,19 @@ function validateSetInput(input: {
   return validateSchemaText(input.schemaText)
 }
 
+// An untouched new-set form is invalid by definition. Saying so before the user types anything
+// is noise: the disabled Save already carries "not ready yet".
+function formError(input: {
+  saveState: SaveState
+  name: string
+  description: string
+  validationError: string | null
+}): string | null {
+  if (input.saveState.status === 'error') return input.saveState.message
+  if (input.name === '' && input.description === '') return null
+  return input.validationError
+}
+
 function SetForm({ client, onUnauthorized, existing, onSaved, onCancel }: SetFormProps) {
   const [name, setName] = useState(existing?.name ?? '')
   const [description, setDescription] = useState(existing?.description ?? '')
@@ -286,7 +304,7 @@ function SetForm({ client, onUnauthorized, existing, onSaved, onCancel }: SetFor
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' })
 
   const validationError = validateSetInput({ name, description, schemaText, requireName: existing === null })
-  const displayError = saveState.status === 'error' ? saveState.message : validationError
+  const displayError = formError({ saveState, name, description, validationError })
 
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault()
@@ -309,7 +327,7 @@ function SetForm({ client, onUnauthorized, existing, onSaved, onCancel }: SetFor
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex flex-col gap-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+      className="panel flex flex-col gap-4 p-4"
     >
       <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
         {existing === null ? 'New set' : `Edit “${existing.name}”`}

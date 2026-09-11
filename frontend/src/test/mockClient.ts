@@ -18,7 +18,12 @@ export function makeClient(overrides: Partial<ApiClient>): ApiClient {
     listSetRecords: notImplemented,
     patchRecord: notImplemented,
     listReview: notImplemented,
+    getPipeline: notImplemented,
+  retryStage: notImplemented,
     ingest: notImplemented,
+    pingFirecrawl: notImplemented,
+    pingOllama: notImplemented,
+    generateWithOllama: notImplemented,
     ...overrides,
   }
 }

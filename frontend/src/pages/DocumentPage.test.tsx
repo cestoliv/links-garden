@@ -172,7 +172,7 @@ describe('DocumentPage', () => {
     )
     await screen.findByRole('heading', { name: 'Doc A' })
 
-    const centerLink = screen.getByRole('link', { name: 'Center the graph on this document' })
+    const centerLink = screen.getByRole('link', { name: 'Center graph' })
     expect(centerLink).toHaveAttribute('href', '/graph/7')
 
     await userEvent.click(centerLink)

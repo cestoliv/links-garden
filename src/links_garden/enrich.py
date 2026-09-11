@@ -186,15 +186,60 @@ class Enricher:
             ) from exc
         return parsed
 
-    def check(self) -> bool:
-        """Whether `settings.extraction_model` is pulled. Matches `Embedder.check`."""
+    def generate(self, prompt: str) -> str:
+        """Answer one free-form prompt with the extraction model.
+
+        Diagnostic only, for the dashboard's ollama check. A pulled model proves nothing about
+        generation: ollama answers `/api/tags` from disk, while a model that cannot load into
+        memory only fails once something asks it for tokens. No `format`, because the point is
+        to see the model's own words, not a schema this call would validate for it.
+        """
+        url = f"{self._settings.ollama_url}/api/chat"
+        try:
+            response = self._client.post(
+                url,
+                json={
+                    "model": self._settings.extraction_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "think": False,
+                    "stream": False,
+                    "options": {"temperature": 0},
+                },
+                timeout=_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload: Any = response.json()
+            content = payload["message"]["content"]
+            if not isinstance(content, str):
+                raise TypeError(f"expected a string reply, got {type(content).__name__}")
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"could not generate with ollama at {url} "
+                f"for model {self._settings.extraction_model!r}: {exc}"
+            ) from exc
+        return content
+
+    def pulled_models(self) -> tuple[str, ...]:
+        """Every model ollama has pulled, by base name with any `:tag` suffix dropped.
+
+        Raises when ollama does not answer, so a caller can tell "ollama is down" from "ollama
+        is up and the model is missing". `check` flattens both to False; the dashboard needs
+        them apart.
+        """
         url = f"{self._settings.ollama_url}/api/tags"
         try:
             response = self._client.get(url, timeout=_TIMEOUT)
             response.raise_for_status()
             payload: Any = response.json()
-            names = {model["name"].split(":")[0] for model in payload["models"]}
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            return tuple(model["name"].split(":")[0] for model in payload["models"])
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"could not reach ollama at {url}: {exc}") from exc
+
+    def check(self) -> bool:
+        """Whether `settings.extraction_model` is pulled. Matches `Embedder.check`."""
+        try:
+            names = self.pulled_models()
+        except RuntimeError:
             return False
         return self._settings.extraction_model.split(":")[0] in names
 

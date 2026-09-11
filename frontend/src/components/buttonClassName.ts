@@ -4,20 +4,23 @@ export interface ButtonStyleProps {
 }
 
 const base =
-  'inline-flex items-center justify-center gap-2 rounded-md font-medium ' +
-  'transition-[transform,background-color] duration-150 ease-out active:scale-[0.97] ' +
-  'disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 ' +
-  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600'
+  'inline-flex cursor-pointer items-center justify-center gap-2 rounded-md font-medium ' +
+  'transition-[background-color,border-color,color] duration-150 ease-out ' +
+  'disabled:cursor-not-allowed disabled:opacity-50 ' +
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400'
 
 const sizes = {
-  md: 'px-4 py-2 text-sm',
+  md: 'px-3.5 py-2 text-sm',
   sm: 'px-2.5 py-1 text-xs',
 }
 
+// Primary carries dark text on the accent: white on this green misses 4.5:1. Ghost is a
+// bordered slot, so a row of mixed actions still lines up.
 const variants = {
-  primary: 'bg-emerald-700 text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500',
+  primary: 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400',
   ghost:
-    'bg-transparent text-zinc-700 hover:bg-zinc-200/70 dark:text-zinc-300 dark:hover:bg-zinc-800',
+    'border border-zinc-300 bg-transparent text-zinc-700 hover:bg-zinc-200/70 ' +
+    'dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-800',
 }
 
 /** `Button`'s own look, kept out of Button.tsx so that file only exports the component (fast

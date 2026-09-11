@@ -4,7 +4,9 @@ import type { ApiClient } from '../api/client'
 import { describeError, isUnauthorized } from '../api/client'
 import type { Hit } from '../api/types'
 import { Link } from '../components/Link'
+import { PageHeader } from '../components/PageHeader'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { plainSnippet } from '../utils/snippet'
 
 interface SearchPageProps {
   client: ApiClient
@@ -86,9 +88,25 @@ export function SearchPage({ client, onUnauthorized, onOpenDocument, initialQuer
   }, [state.status])
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Search</h1>
-      <input
+    <div className="mx-auto max-w-3xl px-6 py-8">
+      <PageHeader
+        eyebrow="retrieval"
+        title="Search"
+        description="Keyword and embedding search, blended. Results update as you type."
+      />
+      <div className="relative mt-6">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.75}
+          className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-zinc-500"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+        </svg>
+        <input
         type="search"
         id="search-query"
         name="search-query"
@@ -96,10 +114,11 @@ export function SearchPage({ client, onUnauthorized, onOpenDocument, initialQuer
         onChange={(event) => {
           setQuery(event.target.value)
         }}
-        placeholder="Search your garden…"
+        placeholder="Search the garden"
         aria-label="Search"
-        className="mt-4 w-full rounded-md border border-zinc-300 bg-white px-4 py-2.5 text-sm text-zinc-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-      />
+        className="w-full rounded-md border border-zinc-300 bg-white py-3 pr-4 pl-11 text-sm text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+        />
+      </div>
       <div className="mt-6">
         <SearchResults
           state={state}
@@ -208,7 +227,10 @@ function ResultsList({
           No strong match for “{query}”. Showing the closest results below.
         </p>
       )}
-      <ul className="flex flex-col gap-3">
+      <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+        {hits.length} result{hits.length === 1 ? '' : 's'}
+      </p>
+      <ul className="flex flex-col gap-2">
         {hits.map((hit, index) => (
           <ResultCard key={hit.document_id} hit={hit} index={index} reduceMotion={reduceMotion} onOpenDocument={onOpenDocument} />
         ))}
@@ -233,7 +255,7 @@ function ResultCard({
       initial={reduceMotion ? false : { opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, delay: Math.min(index, 6) * 0.04, ease: EASE_OUT }}
-      className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+      className="panel p-4 transition-colors duration-150 hover:border-zinc-300 dark:hover:border-zinc-700"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -242,20 +264,18 @@ function ResultCard({
             onNavigate={() => {
               onOpenDocument(hit.document_id)
             }}
-            className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+            className="block truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
           >
             {hit.title ?? hit.url ?? 'Untitled'}
           </Link>
-          <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">
-            {hit.source}
-          </p>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{hit.source}</p>
         </div>
-        <span className="shrink-0 rounded bg-zinc-100 px-2 py-0.5 font-mono text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-          {hit.score.toFixed(3)}
+        <span className="shrink-0 rounded-md border border-zinc-200 bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          score {hit.score.toFixed(3)}
         </span>
       </div>
-      <p className="mt-2 line-clamp-4 text-sm break-words whitespace-pre-line text-zinc-600 dark:text-zinc-300">
-        {hit.snippet}
+      <p className="mt-2 line-clamp-3 text-sm break-words text-zinc-600 dark:text-zinc-300">
+        {plainSnippet(hit.snippet)}
       </p>
     </motion.li>
   )

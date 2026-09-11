@@ -12,7 +12,7 @@ from links_garden.adapters import Extracted
 from links_garden.config import Settings
 from links_garden.db import connect, initialize, is_tombstoned, tombstone
 from links_garden.fetch import Fetcher, FetchResult
-from links_garden.sync import SyncReport, ingest_url, sync_vault
+from links_garden.sync import SyncReport, ingest_url, retry_fetches, sync_vault
 from links_garden.vault import VaultNote
 
 
@@ -36,10 +36,15 @@ class FakeFetcher:
         self.spent = spent
         self._max_fetches_per_run = max_fetches_per_run
         self.calls: list[_Call] = []
+        self.forgotten: list[str] = []
 
     @property
     def at_cap(self) -> bool:
         return self.spent >= self._max_fetches_per_run
+
+    def forget_failure(self, url: str) -> bool:
+        self.forgotten.append(url)
+        return True
 
     def fetch(self, url: str, *, force_direct: bool = False) -> FetchResult:
         self.calls.append(_Call(url=url, force_direct=force_direct))
@@ -742,3 +747,93 @@ def test_ingest_url_cap_skip_leaves_the_row_pending_not_failed(
         ("https://example.test/x",),
     ).fetchone()
     assert row["status"] == "pending"
+
+
+# --- retry_fetches: the dashboard's Fetch retry button ---------------------------------------
+
+
+def _queue_row(
+    conn: sqlite3.Connection, source_ref: str, url: str, status: str, error: str | None = None
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO documents (source, source_ref, url, status, error) "
+        "VALUES ('obsidian', ?, ?, ?, ?)",
+        (source_ref, url, status, error),
+    )
+    conn.commit()
+    return int(cast(int, cursor.lastrowid))
+
+
+# The row must heal in place. An Obsidian URL is stored under `<note path>#<url>`, so re-fetching
+# it through ingest_url would leave the failed row on screen and add a second document beside it.
+def test_retry_fetches_heals_the_failed_row_in_place(tmp_path: Path) -> None:
+    conn = _open(tmp_path)
+    url = "https://example.test/broken"
+    document_id = _queue_row(conn, f"notes/a.md#{url}", url, "failed", "Fetch failed: 504")
+    fake = FakeFetcher({url: _ok(url, "<html><body>back up</body></html>")})
+
+    report = retry_fetches(conn, _as_fetcher(fake))
+
+    assert report.urls_fetched == 1
+    rows = conn.execute("SELECT id, status, error FROM documents").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == document_id
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["error"] is None
+
+
+# A cached failure has to go first, or Fetcher replays the same error for free and the button
+# looks broken. The cached success of a document already `ok` is never touched: it is not queued.
+def test_retry_fetches_drops_the_cached_failure_first(tmp_path: Path) -> None:
+    conn = _open(tmp_path)
+    url = "https://example.test/broken"
+    _queue_row(conn, f"notes/a.md#{url}", url, "failed", "Fetch failed: 504")
+    fake = FakeFetcher({url: _ok(url, "<html><body>back up</body></html>")})
+
+    retry_fetches(conn, _as_fetcher(fake))
+
+    assert fake.forgotten == [url]
+
+
+# At the fetch cap nothing goes out, and the cached failure stays put: dropping it there would
+# strand the URL with neither a cached error nor a fresh one.
+def test_retry_fetches_spends_nothing_at_the_cap(tmp_path: Path) -> None:
+    conn = _open(tmp_path)
+    url = "https://example.test/broken"
+    _queue_row(conn, f"notes/a.md#{url}", url, "failed", "Fetch failed: 504")
+    fake = FakeFetcher({url: _ok(url, "x")}, spent=50)
+
+    report = retry_fetches(conn, _as_fetcher(fake))
+
+    assert report.urls_skipped == 1
+    assert fake.calls == []
+    assert fake.forgotten == []
+    assert conn.execute("SELECT status FROM documents").fetchone()["status"] == "failed"
+
+
+# Only the queue is retried. A document already fetched must never cost a second credit.
+def test_retry_fetches_leaves_a_fetched_document_alone(tmp_path: Path) -> None:
+    conn = _open(tmp_path)
+    url = "https://example.test/fine"
+    _queue_row(conn, f"notes/a.md#{url}", url, "ok")
+    fake = FakeFetcher({})
+
+    report = retry_fetches(conn, _as_fetcher(fake))
+
+    assert report.urls_seen == 0
+    assert fake.calls == []
+
+
+# A tombstoned document is gone. A retry must not resurrect it, and must not spend on it.
+def test_retry_fetches_skips_a_tombstoned_document(tmp_path: Path) -> None:
+    conn = _open(tmp_path)
+    url = "https://example.test/deleted"
+    document_id = _queue_row(conn, f"notes/a.md#{url}", url, "failed", "Fetch failed: 404")
+    conn.execute("UPDATE documents SET deleted_at = '2026-01-01' WHERE id = ?", (document_id,))
+    conn.commit()
+    fake = FakeFetcher({})
+
+    report = retry_fetches(conn, _as_fetcher(fake))
+
+    assert report.urls_seen == 0
+    assert fake.calls == []

@@ -28,7 +28,7 @@ describe('App', () => {
 
     render(<App />)
     await userEvent.type(await screen.findByLabelText('API token'), 'wrong-token')
-    await userEvent.click(screen.getByRole('button', { name: /connect/i }))
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/token rejected/i)
   })
@@ -81,7 +81,7 @@ describe('App', () => {
 
     render(<App />)
     await userEvent.type(await screen.findByLabelText('API token'), 'right-token')
-    await userEvent.click(screen.getByRole('button', { name: /connect/i }))
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
 
     expect(await screen.findByText('Doc 42')).toBeInTheDocument()
   })

@@ -8,7 +8,7 @@ import type { Document, GraphAnchor, Hit } from '../api/types'
 import { Button } from '../components/Button'
 import { buttonClassName } from '../components/buttonClassName'
 import { Link } from '../components/Link'
-import { StatusBadge } from '../components/StatusBadge'
+import { PipelineStatus } from '../components/PipelineStatus'
 
 interface DocumentPageProps {
   client: ApiClient
@@ -118,7 +118,7 @@ export function DocumentPage({ client, documentId, onOpenDocument, onCenterGraph
   }, [client, documentId, onUnauthorized])
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-10">
+    <div className="mx-auto max-w-4xl px-6 py-8">
       <Button variant="ghost" size="sm" onClick={onBack}>
         Back
       </Button>
@@ -158,13 +158,13 @@ function DocumentView({
 
 function DocumentHeader({ document, onCenterGraph }: { document: Document; onCenterGraph: (anchor: GraphAnchor) => void }) {
   return (
-    <div>
+    <div className="border-b border-zinc-200 pb-5 dark:border-zinc-800">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             {document.title ?? document.url ?? 'Untitled'}
           </h1>
-          <p className="mt-0.5 text-xs tracking-wide text-zinc-400 uppercase dark:text-zinc-500">{document.source}</p>
+          <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">{document.source}</p>
           {document.url !== null && (
             <a
               href={document.url}
@@ -183,23 +183,13 @@ function DocumentHeader({ document, onCenterGraph }: { document: Document; onCen
           }}
           className={`shrink-0 ${buttonClassName({ variant: 'ghost', size: 'sm' })}`}
         >
-          Center the graph on this document
+          Center graph
         </Link>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">
-        <span className="flex items-center gap-1.5">
-          Fetched <StatusBadge status={document.status} />
-        </span>
-        <span className="flex items-center gap-1.5">
-          Embedded <StatusBadge status={document.embedded ? 'ok' : 'pending'} />
-        </span>
-        <span className="flex items-center gap-1.5">
-          Enriched <StatusBadge status={document.enriched ? 'ok' : 'pending'} />
-        </span>
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+        <PipelineStatus fetched={document.status} embedded={document.embedded} enriched={document.enriched} />
+        <span>{document.set_names.length > 0 ? `Sets: ${document.set_names.join(', ')}` : 'No sets yet'}</span>
       </div>
-      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-        {document.set_names.length > 0 ? `Sets: ${document.set_names.join(', ')}` : 'No sets yet'}
-      </p>
     </div>
   )
 }
@@ -208,11 +198,27 @@ function DocumentHeader({ document, onCenterGraph }: { document: Document; onCen
  * distinct panel rather than blending into the content below. */
 function EnrichmentPanel({ document }: { document: Document }) {
   return (
-    <div className="mt-6 rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm dark:border-zinc-700 dark:bg-zinc-900/50">
-      <p className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">Generated summary</p>
+    <div className="mt-6 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-4 text-sm">
+      <p className="hud-label text-emerald-600 dark:text-emerald-300">Generated summary</p>
       {document.summary !== null && <p className="mt-1 text-zinc-700 dark:text-zinc-300">{document.summary}</p>}
       {document.keywords !== null && (
-        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">Keywords: {document.keywords}</p>
+        <div className="mt-3">
+          <p className="sr-only">Keywords: {document.keywords}</p>
+          <ul aria-hidden="true" className="flex flex-wrap gap-1.5">
+            {document.keywords
+              .split(',')
+              .map((keyword) => keyword.trim())
+              .filter((keyword) => keyword !== '')
+              .map((keyword) => (
+                <li
+                  key={keyword}
+                  className="rounded-full border border-emerald-500/25 px-2 py-0.5 text-xs text-zinc-500 dark:text-zinc-300"
+                >
+                  {keyword}
+                </li>
+              ))}
+          </ul>
+        </div>
       )}
     </div>
   )
@@ -220,7 +226,7 @@ function EnrichmentPanel({ document }: { document: Document }) {
 
 function DocumentContent({ document }: { document: Document }) {
   return (
-    <div className="mx-auto mt-6 max-w-2xl">
+    <div className="mt-8 max-w-2xl">
       {document.content !== null ? (
         <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
           {document.content}
@@ -237,7 +243,7 @@ function DocumentContent({ document }: { document: Document }) {
 function RelatedDocuments({ state, onOpenDocument }: { state: RelatedState; onOpenDocument: (id: number) => void }) {
   return (
     <div className="mt-10 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-      <h2 className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">Related documents</h2>
+      <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Related documents</h2>
       {state.status === 'loading' && <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
       {state.status === 'error' && (
         <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
@@ -256,7 +262,7 @@ function RelatedDocuments({ state, onOpenDocument }: { state: RelatedState; onOp
                 onNavigate={() => {
                   onOpenDocument(hit.document_id)
                 }}
-                className="truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                className="block truncate text-left text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
               >
                 {hit.title ?? hit.url ?? 'Untitled'}
               </Link>

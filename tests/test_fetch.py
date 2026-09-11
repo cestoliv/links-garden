@@ -186,6 +186,55 @@ def test_failed_fetch_is_cached(tmp_path: Path) -> None:
     assert second.from_cache is True
 
 
+def test_forget_failure_clears_a_cached_failure_so_the_next_fetch_goes_out(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, json={"success": False, "error": "nope"})
+        return httpx.Response(200, json={"success": True, "data": {"rawHtml": "<html>back</html>"}})
+
+    fetcher = Fetcher(settings, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    url = "https://example.com/forget"
+    assert fetcher.fetch(url).status == "failed"
+
+    assert fetcher.forget_failure(url) is True
+
+    assert fetcher.fetch(url).status == "ok"
+    assert calls == 2
+
+
+# A cached success is what keeps a retry from re-spending a credit on a URL that already worked.
+def test_forget_failure_leaves_a_cached_success_alone(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"success": True, "data": {"rawHtml": "<html>a</html>"}})
+
+    fetcher = Fetcher(settings, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    url = "https://example.com/kept"
+    assert fetcher.fetch(url).status == "ok"
+
+    assert fetcher.forget_failure(url) is False
+
+    assert fetcher.fetch(url).from_cache is True
+    assert calls == 1
+
+
+def test_forget_failure_on_an_uncached_url_reports_nothing_dropped(tmp_path: Path) -> None:
+    fetcher = Fetcher(_settings(tmp_path))
+
+    assert fetcher.forget_failure("https://example.com/never-seen") is False
+
+
 def test_force_direct_bypasses_firecrawl(tmp_path: Path) -> None:
     settings = _settings(tmp_path, fetch_backend="firecrawl")
     seen_urls: list[str] = []
